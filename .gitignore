@@ -1,0 +1,4 @@
+/openwrt/
+/release-assets/
+*.log
+__pycache__/
