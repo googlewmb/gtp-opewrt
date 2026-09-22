@@ -21,7 +21,7 @@
 
 SONiC 来自 [mufeng05/openwrt-sonic-fullcone](https://github.com/mufeng05/openwrt-sonic-fullcone)。集成内核、libnftnl、nftables、firewall4、LuCI 与中文翻译。当前上游共用补丁支持 6.6/6.12/6.18；遇到未支持的内核立即停止。可在原生防火墙页面设置全局、区域与协议，不自动开放所有 Full Cone 规则，不引入 TurboACC。
 
-DAED 来自 [QiuSimons/luci-app-daed](https://github.com/QiuSimons/luci-app-daed)，同时安装后端、Web 前端、LuCI 与 BPF/BTF/XDP 依赖。主机安装 Clang/LLVM/Node/pnpm。针对其固定 DAED 源码 `f045ecd` 的两处 catalog 锁文件不一致修复元数据，不更改锁定版本或关闭 frozen 检查；其他未知不一致会报错。
+DAED 来自 [QiuSimons/luci-app-daed](https://github.com/QiuSimons/luci-app-daed)，同时安装后端、Web 前端、LuCI 与 BPF/BTF/XDP 依赖。主机安装 Clang/LLVM/Node/pnpm。针对其固定 DAED 源码 `f045ecd` 的 GraphQL catalog 锁文件不一致修复元数据（保留 Vite override），不更改锁定版本或关闭 frozen 检查；其他未知不一致会报错。
 
 BBRv3 的算法源码直接来自 [Google BBR team](https://github.com/google/bbr/tree/v3)，固定提交 `795544cc00f03d49cfa6802f3da32c0d0a6fb4ab`。TCP 配套接口移植参考 [sbwml/kernel-latest-centos](https://github.com/sbwml/kernel-latest-centos) 的固定 BBR 补丁提交，只取 BBR 相关文件，不使用其发行版或其他补丁。检测实际内核接口后，选择能完整通过 dry-run 的适配器，生成当前源码专用 patch，重新 prepare 并实际 Kbuild。**无法承诺自动支持任意未来内核 API**；不匹配时明确失败，需要补充经过验证的适配器。补丁回放成功不等于内核已编译成功。
 
