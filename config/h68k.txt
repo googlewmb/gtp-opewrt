@@ -1,399 +1,105 @@
-# ============================================================
-# HINLINK H68K / RK3568 / OpenWrt Mainline
-# Target / ARM64 / RK3568
-# ============================================================
-
+# Official OpenWrt main / HINLINK H68K (RK3568).
 CONFIG_TARGET_rockchip=y
 CONFIG_TARGET_rockchip_armv8=y
 CONFIG_TARGET_MULTI_PROFILE=y
 CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y
-# CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_opc-h6xk is not set
-# CONFIG_TARGET_ALL_PROFILES is not set
-
 CONFIG_TARGET_ROOTFS_SQUASHFS=y
 CONFIG_TARGET_ROOTFS_PARTSIZE=512
-
-
-# ============================================================
-# 编译缓存
-# ============================================================
-
 CONFIG_CCACHE=y
 
-
-# ============================================================
-# TCP BBR
-#
-# BBR：
-#   - 启用 TCP BBR
-#   - 默认 TCP 拥塞控制使用 BBR
-#   - 保留 FQ 用于 TCP pacing
-#
-# BBRv3 的内核源码适配由 patch/public1.sh 负责
-# 不在这里硬编码 Linux 内核版本或内部 API。
-# ============================================================
-
-CONFIG_TCP_CONG_BBR=y
-CONFIG_DEFAULT_BBR=y
-
-#
-# Fair Queue
-#
-CONFIG_NET_SCH_FQ=y
-
-# BBRv3
-CONFIG_TCP_CONG_BBR=y
-CONFIG_NET_SCH_FQ=y
-
-
-# ============================================================
-# 内核调试
-# ============================================================
-
-CONFIG_DEBUG_KERNEL=y
-CONFIG_KALLSYMS=y
-CONFIG_KALLSYMS_ALL=y
-CONFIG_DEBUG_INFO=y
-CONFIG_DEBUG_FS=y
-CONFIG_STACKTRACE=y
-CONFIG_MAGIC_SYSRQ=y
-CONFIG_DEBUG_LIST=y
-CONFIG_DEBUG_OBJECTS=y
-CONFIG_DEBUG_NOTIFIERS=y
-CONFIG_DEBUG_KERNEL_DUMMY=y
-
-
-# ============================================================
-# LuCI / 中文
-# ============================================================
+# Kernel options use OpenWrt's KERNEL_ namespace.
+CONFIG_DEVEL=y
+CONFIG_KERNEL_DEBUG_INFO=y
+# CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
+CONFIG_KERNEL_DEBUG_INFO_BTF=y
+CONFIG_KERNEL_CGROUPS=y
+CONFIG_KERNEL_CGROUP_BPF=y
+CONFIG_KERNEL_BPF_EVENTS=y
+CONFIG_BPF_TOOLCHAIN_HOST=y
+CONFIG_KERNEL_XDP_SOCKETS=y
 
 CONFIG_PACKAGE_luci=y
-CONFIG_PACKAGE_luci-base=y
 CONFIG_PACKAGE_luci-compat=y
-CONFIG_PACKAGE_luci-mod-admin-full=y
-CONFIG_PACKAGE_luci-mod-network=y
-CONFIG_PACKAGE_luci-mod-status=y
-CONFIG_PACKAGE_luci-mod-system=y
-CONFIG_PACKAGE_luci-theme-bootstrap=y
-
 CONFIG_LUCI_LANG_zh_Hans=y
-CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-
 CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_PACKAGE_luci-app-package-manager=y
 
-CONFIG_PACKAGE_luci-app-opkg=y
-CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
-
-
-# ============================================================
-# 网络 / IPv6 / PPPoE
-# ============================================================
-
-CONFIG_PACKAGE_netifd=y
+# Network / nftables
+# CONFIG_PACKAGE_dnsmasq is not set
+CONFIG_PACKAGE_dnsmasq-full=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_nftables-json=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+CONFIG_PACKAGE_kmod-nft-socket=y
+CONFIG_PACKAGE_kmod-nft-bridge=y
+CONFIG_PACKAGE_kmod-nft-offload=y
+CONFIG_PACKAGE_conntrack=y
 CONFIG_PACKAGE_ip-full=y
 CONFIG_PACKAGE_ethtool=y
-CONFIG_PACKAGE_dnsmasq-full=y
-
-CONFIG_PACKAGE_kmod-ipv6=y
-CONFIG_PACKAGE_kmod-ip6tables=y
-CONFIG_PACKAGE_kmod-ip6-tunnel=y
-CONFIG_PACKAGE_kmod-sit=y
-CONFIG_PACKAGE_kmod-ip6-vti=y
-CONFIG_PACKAGE_kmod-ip6gre=y
-CONFIG_PACKAGE_kmod-ip6tnl=y
-
 CONFIG_PACKAGE_odhcp6c=y
 CONFIG_PACKAGE_odhcpd-ipv6only=y
-CONFIG_PACKAGE_luci-proto-ipv6=y
-
 CONFIG_PACKAGE_ppp=y
 CONFIG_PACKAGE_ppp-mod-pppoe=y
-CONFIG_PACKAGE_pppoe-discovery=y
+CONFIG_PACKAGE_luci-proto-ipv6=y
 CONFIG_PACKAGE_luci-proto-ppp=y
 
-
-# ============================================================
-# firewall4 / nftables / Conntrack
-# ============================================================
-
-CONFIG_PACKAGE_firewall4=y
-CONFIG_PACKAGE_nftables=y
-
-CONFIG_PACKAGE_kmod-nft-core=y
-CONFIG_PACKAGE_kmod-nft-nat=y
-CONFIG_PACKAGE_kmod-nft-conntrack=y
-CONFIG_PACKAGE_kmod-nft-fib=y
-CONFIG_PACKAGE_kmod-nft-offload=y
-CONFIG_PACKAGE_kmod-nft-netdev=y
-CONFIG_PACKAGE_kmod-nft-bridge=y
-CONFIG_PACKAGE_kmod-nft-tproxy=y
-
-CONFIG_PACKAGE_kmod-nf-conntrack=y
-CONFIG_PACKAGE_kmod-nf-conntrack6=y
-CONFIG_PACKAGE_kmod-nf-nat=y
-CONFIG_PACKAGE_kmod-nf-nat6=y
-CONFIG_PACKAGE_kmod-nf-reject=y
-CONFIG_PACKAGE_kmod-nf-reject6=y
-
-CONFIG_PACKAGE_conntrack=y
-CONFIG_PACKAGE_conntrack-tools=y
-
-CONFIG_PACKAGE_kmod-sched-core=y
-CONFIG_PACKAGE_kmod-sched-cake=y
-CONFIG_PACKAGE_tc-tiny=y
-
+# BBRv3 is supplied by the patch; module autoload + sysctl selects bbr.
 CONFIG_PACKAGE_kmod-tcp-bbr=y
+CONFIG_PACKAGE_kmod-sched-core=y
+CONFIG_PACKAGE_kmod-sched=y
+CONFIG_PACKAGE_kmod-sched-bpf=y
+CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
 
-
-# ============================================================
-# H68K 板载网卡 / PCIe / SATA
-# ============================================================
-
+# H68K onboard Ethernet, SATA and USB storage
 CONFIG_PACKAGE_kmod-r8169=y
-CONFIG_PACKAGE_pciutils=y
-CONFIG_PACKAGE_pciids=y
 CONFIG_PACKAGE_kmod-ata-ahci-dwc=y
-
-
-# ============================================================
-# USB 基础
-# ============================================================
-
-CONFIG_PACKAGE_kmod-usb-core=y
-CONFIG_PACKAGE_kmod-usb-common=y
-CONFIG_PACKAGE_kmod-usb2=y
+CONFIG_PACKAGE_pciutils=y
 CONFIG_PACKAGE_kmod-usb3=y
-CONFIG_PACKAGE_kmod-usb-hid=y
-CONFIG_PACKAGE_kmod-hid=y
 CONFIG_PACKAGE_kmod-usb-storage=y
 CONFIG_PACKAGE_kmod-usb-storage-uas=y
-CONFIG_PACKAGE_kmod-scsi-core=y
-CONFIG_PACKAGE_kmod-scsi-generic=y
-
-
-# ============================================================
-# USB 硬盘文件系统
-# ============================================================
-
 CONFIG_PACKAGE_kmod-fs-ext4=y
-CONFIG_PACKAGE_e2fsprogs=y
-
-CONFIG_PACKAGE_kmod-fs-vfat=y
-CONFIG_PACKAGE_kmod-nls-cp437=y
-CONFIG_PACKAGE_kmod-nls-iso8859-1=y
-CONFIG_PACKAGE_kmod-nls-utf8=y
-
 CONFIG_PACKAGE_kmod-fs-exfat=y
-
 CONFIG_PACKAGE_kmod-fs-ntfs3=y
-CONFIG_PACKAGE_ntfs3-mount=y
-
-CONFIG_PACKAGE_kmod-fs-f2fs=y
-CONFIG_PACKAGE_f2fs-tools=y
-
-CONFIG_PACKAGE_kmod-fs-btrfs=y
-CONFIG_PACKAGE_btrfs-progs=y
-
-CONFIG_PACKAGE_kmod-fs-xfs=y
-CONFIG_PACKAGE_xfs-fsck=y
-CONFIG_PACKAGE_xfs-mkfs=y
-
-CONFIG_PACKAGE_kmod-fs-hfs=y
-CONFIG_PACKAGE_kmod-fs-hfsplus=y
-
-
-# ============================================================
-# 自动挂载 / 磁盘管理
-# ============================================================
-
 CONFIG_PACKAGE_block-mount=y
-CONFIG_PACKAGE_blockd=y
-CONFIG_PACKAGE_mount-utils=y
 CONFIG_PACKAGE_lsblk=y
 CONFIG_PACKAGE_fdisk=y
 CONFIG_PACKAGE_parted=y
-
-
-# ============================================================
-# USB 网卡
-# ============================================================
-
-CONFIG_PACKAGE_kmod-usb-net=y
-CONFIG_PACKAGE_kmod-usb-net-rtl8150=y
 CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
-CONFIG_PACKAGE_kmod-usb-net-asix=y
-CONFIG_PACKAGE_kmod-usb-net-asix-ax88179=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-eem=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-subset=y
-CONFIG_PACKAGE_kmod-usb-net-rndis=y
-CONFIG_PACKAGE_kmod-usb-net-aqc111=y
-CONFIG_PACKAGE_kmod-usb-net-lan78xx=y
-CONFIG_PACKAGE_kmod-usb-net-smsc75xx=y
-CONFIG_PACKAGE_kmod-usb-net-smsc95xx=y
-CONFIG_PACKAGE_kmod-usb-net-dm9601-ether=y
-CONFIG_PACKAGE_kmod-usb-net-mcs7830=y
-CONFIG_PACKAGE_kmod-usb-net-pegasus=y
-CONFIG_PACKAGE_kmod-usb-net-kaweth=y
 
-
-# ============================================================
-# Wi-Fi
-# ============================================================
-
+# Optional USB/PCIe Wi-Fi (H68K has no built-in radio)
 CONFIG_PACKAGE_iw=y
 CONFIG_PACKAGE_iwinfo=y
-CONFIG_PACKAGE_wireless-regdb=y
-CONFIG_PACKAGE_wifi-scripts=y
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
-CONFIG_PACKAGE_hostapd-utils=y
-
-# MediaTek MT76
-CONFIG_PACKAGE_kmod-mt76-core=y
-CONFIG_PACKAGE_kmod-mt76-connac=y
-
-# MT792x / MT7921
-CONFIG_PACKAGE_kmod-mt792x-common=y
-CONFIG_PACKAGE_kmod-mt7921-common=y
 CONFIG_PACKAGE_kmod-mt7921e=y
-CONFIG_PACKAGE_mt7921-firmware=y
-CONFIG_PACKAGE_mt7921bt-firmware=y
-
-# MT792x USB
-CONFIG_PACKAGE_kmod-mt76-usb=y
-CONFIG_PACKAGE_kmod-mt792x-usb=y
 CONFIG_PACKAGE_kmod-mt7921u=y
 
-# MT7925
-CONFIG_PACKAGE_kmod-mt7925-common=y
-CONFIG_PACKAGE_kmod-mt7925e=y
-CONFIG_PACKAGE_kmod-mt7925u=y
-CONFIG_PACKAGE_kmod-mt7925-firmware=y
+# Core third-party features; services still need user configuration.
+CONFIG_PACKAGE_luci-app-openclash=y
+CONFIG_PACKAGE_luci-app-homeproxy=y
+CONFIG_PACKAGE_luci-app-smartdns=y
+CONFIG_PACKAGE_smartdns=y
+CONFIG_PACKAGE_luci-app-mosdns=y
+CONFIG_PACKAGE_mosdns=y
+CONFIG_PACKAGE_luci-app-passwall=y
+CONFIG_PACKAGE_luci-app-daed=y
+CONFIG_PACKAGE_daed=y
+CONFIG_PACKAGE_v2ray-geoip=y
+CONFIG_PACKAGE_v2ray-geosite=y
 
-# MT7915 / MT7916
-CONFIG_PACKAGE_kmod-mt7915e=y
-CONFIG_PACKAGE_kmod-mt7915-firmware=y
-CONFIG_PACKAGE_kmod-mt7916-firmware=y
-
-# MT76 USB
-CONFIG_PACKAGE_kmod-mt76x02-usb=y
-CONFIG_PACKAGE_kmod-mt76x02-common=y
-CONFIG_PACKAGE_kmod-mt76x0-common=y
-CONFIG_PACKAGE_kmod-mt76x0u=y
-CONFIG_PACKAGE_kmod-mt76x2-common=y
-CONFIG_PACKAGE_kmod-mt76x2u=y
-
-# Realtek / Ralink / Atheros USB Wi-Fi
-CONFIG_PACKAGE_kmod-rtl8xxxu=y
-CONFIG_PACKAGE_kmod-rtl8192cu=y
-CONFIG_PACKAGE_kmod-rtl8192du=y
-CONFIG_PACKAGE_kmod-rtw88-usb=y
-CONFIG_PACKAGE_kmod-ath9k-htc=y
-CONFIG_PACKAGE_kmod-rt2800-usb=y
-CONFIG_PACKAGE_kmod-rt2x00-usb=y
-
-
-# ============================================================
-# Bluetooth / USB 串口
-# ============================================================
-
-CONFIG_PACKAGE_kmod-bluetooth=y
-CONFIG_PACKAGE_kmod-btusb=y
-
-CONFIG_PACKAGE_kmod-usb-serial=y
-CONFIG_PACKAGE_kmod-usb-serial-option=y
-CONFIG_PACKAGE_kmod-usb-serial-wwan=y
-CONFIG_PACKAGE_kmod-usb-serial-pl2303=y
-CONFIG_PACKAGE_kmod-usb-serial-ch341=y
-CONFIG_PACKAGE_kmod-usb-serial-ftdi=y
-
-
-# ============================================================
-# USB 4G / 5G
-# ============================================================
-
-CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
-
-CONFIG_PACKAGE_luci-proto-qmi=y
-CONFIG_PACKAGE_luci-proto-mbim=y
-CONFIG_PACKAGE_luci-proto-ncm=y
-
-
-# ============================================================
-# Samba / NFS / 自动共享基础
-# ============================================================
-
-CONFIG_PACKAGE_samba4-server=y
-CONFIG_PACKAGE_samba4-utils=y
-CONFIG_PACKAGE_luci-app-samba4=y
-CONFIG_PACKAGE_luci-i18n-samba4-zh-cn=y
-
-CONFIG_PACKAGE_nfs-kernel-server=y
-CONFIG_PACKAGE_nfs-utils=y
-CONFIG_PACKAGE_luci-app-nfs=y
-
-CONFIG_PACKAGE_kmod-fs-cifs=y
-CONFIG_PACKAGE_kmod-fs-nfs=y
-CONFIG_PACKAGE_kmod-fs-nfs-v4=y
-
-
-# ============================================================
-# VPN / WireGuard
-# ============================================================
-
-CONFIG_PACKAGE_wireguard-tools=y
-CONFIG_PACKAGE_kmod-wireguard=y
-CONFIG_PACKAGE_luci-proto-wireguard=y
-CONFIG_PACKAGE_kmod-tun=y
-
-
-# ============================================================
-# 常用服务
-# ============================================================
-
-CONFIG_PACKAGE_ddns-scripts=y
-CONFIG_PACKAGE_luci-app-ddns=y
-CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y
-
-CONFIG_PACKAGE_miniupnpd-nftables=y
+CONFIG_PACKAGE_luci-app-diskman=y
 CONFIG_PACKAGE_luci-app-upnp=y
-CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-
+CONFIG_PACKAGE_miniupnpd-nftables=y
+CONFIG_PACKAGE_luci-app-ddns=y
 CONFIG_PACKAGE_luci-app-wol=y
-CONFIG_PACKAGE_luci-i18n-wol-zh-cn=y
-
-CONFIG_PACKAGE_uhttpd=y
-CONFIG_PACKAGE_uhttpd-mod-ubus=y
-
-
-# ============================================================
-# 常用工具
-# ============================================================
-
+CONFIG_PACKAGE_luci-app-samba4=y
+CONFIG_PACKAGE_samba4-server=y
+CONFIG_PACKAGE_kmod-wireguard=y
+CONFIG_PACKAGE_wireguard-tools=y
+CONFIG_PACKAGE_luci-proto-wireguard=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_ca-bundle=y
+CONFIG_PACKAGE_htop=y
 CONFIG_PACKAGE_tcpdump=y
 CONFIG_PACKAGE_iperf3=y
-CONFIG_PACKAGE_mtr=y
-CONFIG_PACKAGE_bind-dig=y
-CONFIG_PACKAGE_curl=y
-CONFIG_PACKAGE_wget-ssl=y
-
-CONFIG_PACKAGE_dropbear=y
-CONFIG_PACKAGE_htop=y
-CONFIG_PACKAGE_procps-ng=y
-
-CONFIG_PACKAGE_urngd=y
-CONFIG_PACKAGE_ca-bundle=y
-CONFIG_PACKAGE_libustream-mbedtls=y
-
-
-# ============================================================
-# 禁用旧防火墙 / swconfig
-# ============================================================
-
-# CONFIG_PACKAGE_firewall is not set
-# CONFIG_PACKAGE_iptables is not set
-# CONFIG_PACKAGE_ip6tables-zz-legacy is not set
-# CONFIG_PACKAGE_swconfig is not set
