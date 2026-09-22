@@ -104,10 +104,6 @@ jobs:
 
           make defconfig                                     # 生成最终配置
 
-          grep -q \
-            '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
-            .config                                           # 再次确认 H68K
-
       # 缓存下载文件和编译缓存
       - name: 缓存
         uses: actions/cache@v4                              # GitHub 缓存
@@ -150,8 +146,8 @@ jobs:
         with:
           name: ${{ env.OPENWRT_NAME }}-Build-Logs          # 日志名称
           path: |
-            build-parallel.log                               # 并行日志
-            build-single.log                                 # 单线程日志
+            build-parallel.log
+            build-single.log
           if-no-files-found: ignore                          # 无日志不报错
           retention-days: 7                                  # 保留 7 天
 
@@ -172,14 +168,14 @@ jobs:
         with:
           name: ${{ env.OPENWRT_NAME }}-Firmware            # 固件名称
           path: |
-            openwrt/bin/targets/**/*.bin                     # BIN
-            openwrt/bin/targets/**/*.itb                     # ITB
-            openwrt/bin/targets/**/*.img                     # IMG
-            openwrt/bin/targets/**/*.gz                      # GZ
-            openwrt/bin/targets/**/*.zip                     # ZIP
-            openwrt/bin/targets/**/*.manifest                # MANIFEST
-            openwrt/bin/targets/**/*.json                    # JSON
-            openwrt/bin/targets/**/*.sha256                  # SHA256
+            openwrt/bin/targets/**/*.bin
+            openwrt/bin/targets/**/*.itb
+            openwrt/bin/targets/**/*.img
+            openwrt/bin/targets/**/*.gz
+            openwrt/bin/targets/**/*.zip
+            openwrt/bin/targets/**/*.manifest
+            openwrt/bin/targets/**/*.json
+            openwrt/bin/targets/**/*.sha256
           if-no-files-found: warn                            # 无匹配文件只警告
           retention-days: 7                                  # 保留 7 天
 
