@@ -48,6 +48,13 @@ class PreparationTests(unittest.TestCase):
             prepare.sonic()
         self.assertIn('not validated', str(exc.exception))
 
+    def test_patch_recount_preserves_file_boundaries(self):
+        patch = ('--- a/one\n+++ b/one\n@@ -1,90 +1,90 @@\n\n+a\n'
+                 '--- a/two\n+++ b/two\n@@ -1,90 +1,90 @@\n old\n+new\n')
+        fixed = prepare.normalize_patch(patch)
+        self.assertIn('@@ -1,1 +1,2 @@\n \n+a', fixed)
+        self.assertIn('--- a/two\n+++ b/two\n@@ -1,1 +1,2 @@', fixed)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -113,7 +113,14 @@ def sonic():
         require(patches, f"Missing upstream SONiC patches: {origin}")
         dest.mkdir(exist_ok=True)
         for patch in patches:
-            write(dest / patch.name, normalize_patch(patch.read_text()))
+            content = patch.read_text()
+            if patch.name == "984-add-sonic-fullcone-support.patch":
+                # 6.18 stable inserts nf_ct_helper_expectfn_destroy() after
+                # synchronize_net(). Anchor these additions at kvfree instead.
+                content = content.replace(" \t\tsynchronize_net();\n", "")
+                content = content.replace("\n\n \tsynchronize_net();\n \tkvfree(nf_nat_bysource);",
+                                          "\n \tkvfree(nf_nat_bysource);")
+            write(dest / patch.name, normalize_patch(content))
     # LuCI main changed translation context and the masq_allow_invalid line.
     # Rebase upstream's three addition-only blocks onto unique current anchors.
     luci_patch = src / "patches/luci-app-firewall/001-add-fullcone-options.patch"
