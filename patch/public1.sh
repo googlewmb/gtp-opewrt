@@ -3,450 +3,839 @@
 # ============================================================
 # public1.sh
 #
-# OpenWrt 官方主线 BBRv3 补丁
-#
-# 来源：
-#   QiuSimons/YAOF 25.12
-#
-# 适用：
-#   - OpenWrt 官方主线
-#   - ARM64 / H68K
-#   - OpenWrt 25.12
-#   - 当前使用 generic backport 内核的版本
+# OpenWrt Mainline / HINLINK H68K
 #
 # 功能：
-#   1. 自动检测 OpenWrt 当前 KERNEL_PATCHVER
-#   2. 自动定位对应 target/linux/generic/backport-*
-#   3. 安装 YAOF BBRv3 0001~0018
-#   4. 排除 0019 x86 CFI/BPF 专用补丁
-#   5. 确保 CONFIG_TCP_CONG_BBR=y
-#   6. 确保 CONFIG_NET_SCH_FQ=y
-#   7. 确保默认 TCP 拥塞控制为 bbr
+#   1. 确认当前源码是 OpenWrt Mainline
+#   2. 确认目标为 HINLINK H68K
+#   3. 确认 Rockchip 使用 Linux 6.18
+#   4. 获取 Google 官方 BBR v3 源码历史
+#   5. 从 Google 官方 Linux 6.13.7 基线提取 BBRv3 内核提交
+#   6. 排除 tcp_bbr1.c / iproute2 / 测试代码
+#   7. 在当前 OpenWrt 6.18 实际内核源码上逐提交进行 3-way backport
+#   8. 只有全部提交成功才生成 OpenWrt patch
+#   9. 重新执行 OpenWrt kernel prepare
+#  10. 验证 BBR_VERSION=3
+#  11. 编译 Linux kernel 验证
+#
+# 来源：
+#   Google 官方：
+#     https://github.com/google/bbr
+#
+# Google BBRv3：
+#   基线：
+#     648e04a805652f513af04b47035cde896addf9b0
+#
+#   最终：
+#     90210de4b779d40496dee0b89081780eeddf2a60
 #
 # 注意：
-#   YAOF BBRv3 不是 CONFIG_TCP_CONG_BBR3。
-#   它更新的是 Linux 原有的 BBR 模块：
-#
-#       CONFIG_TCP_CONG_BBR
-#              ↓
-#       net/ipv4/tcp_bbr.c
-#              ↓
-#       BBRv3
-#
-# 运行时仍然：
-#
-#       net.ipv4.tcp_congestion_control=bbr
+#   90210... 是 Google bbr/v3 当前最终 README 提交。
+#   内核 patch 通过路径过滤，只提取 include/ 和 net/
+#   中的内核代码，因此不会把 README/iproute2/test 内容带入。
 #
 # ============================================================
 
-set -e
+set -euo pipefail
 
-echo ""
+echo
 echo "============================================================"
-echo " OpenWrt BBRv3 Patch"
+echo " OpenWrt Mainline / Google BBRv3"
+echo " HINLINK H68K / Linux 6.18"
 echo "============================================================"
-echo " Source : QiuSimons/YAOF"
-echo " Branch : 25.12"
-echo " Target : ARM64 / H68K"
-echo "============================================================"
-echo ""
+echo
 
 # ============================================================
-# 1. 检查 OpenWrt 源码根目录
+# 1. 基础检查
 # ============================================================
 
-if [ ! -d "target/linux" ]; then
-	echo "ERROR: 当前目录不是 OpenWrt 源码根目录"
-	exit 1
+[ -f Makefile ] || {
+    echo "错误：当前目录不是 OpenWrt 源码根目录"
+    exit 1
+}
+
+[ -x ./scripts/feeds ] || {
+    echo "错误：scripts/feeds 不存在"
+    exit 1
+}
+
+[ -f .config ] || {
+    echo "错误：.config 不存在"
+    exit 1
+}
+
+# ============================================================
+# 2. 确认 H68K
+# ============================================================
+
+if ! grep -q \
+    '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
+    .config; then
+
+    echo "错误：当前配置不是 HINLINK H68K"
+    echo
+    echo "当前 Rockchip 设备配置："
+    grep '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_' .config || true
+    exit 1
 fi
 
-if [ ! -f "target/linux/generic/Makefile" ]; then
-	echo "ERROR: 找不到 target/linux/generic/Makefile"
-	exit 1
-fi
+echo "目标设备：HINLINK H68K"
 
 # ============================================================
-# 2. BBRv3 来源
+# 3. 获取 Rockchip kernel 版本
 # ============================================================
 
-BBR3_REPO="https://raw.githubusercontent.com/QiuSimons/YAOF/25.12/PATCH/kernel/bbr3"
+ROCKCHIP_MK="target/linux/rockchip/Makefile"
 
-# ============================================================
-# 3. 自动检测 OpenWrt 当前内核版本
-# ============================================================
+[ -f "$ROCKCHIP_MK" ] || {
+    echo "错误：找不到 $ROCKCHIP_MK"
+    exit 1
+}
 
 KERNEL_PATCHVER="$(
-	grep -E '^[[:space:]]*KERNEL_PATCHVER[[:space:]]*[:?+]?=' \
-		target/linux/generic/Makefile \
-		| head -n 1 \
-		| sed -E 's/.*=[[:space:]]*//'
+    sed -n \
+        's/^[[:space:]]*KERNEL_PATCHVER[[:space:]]*:=[[:space:]]*//p' \
+        "$ROCKCHIP_MK" |
+        head -n 1
 )"
 
-if [ -z "$KERNEL_PATCHVER" ]; then
-	echo "ERROR: 无法检测 KERNEL_PATCHVER"
-	exit 1
+[ -n "$KERNEL_PATCHVER" ] || {
+    echo "错误：无法获取 Rockchip KERNEL_PATCHVER"
+    exit 1
+}
+
+echo "OpenWrt Rockchip kernel：$KERNEL_PATCHVER"
+
+if [ "$KERNEL_PATCHVER" != "6.18" ]; then
+    echo
+    echo "错误：当前脚本只针对 OpenWrt Mainline Linux 6.18"
+    echo "检测到：$KERNEL_PATCHVER"
+    exit 1
 fi
 
-echo "检测到 OpenWrt 内核版本：$KERNEL_PATCHVER"
+# ============================================================
+# 4. 规范化配置
+#
+# public1.sh 在 workflow 中早于最终 make defconfig。
+# 这里先确保 kernel prepare 使用的是有效配置。
+# 后面的 workflow 仍然会再次执行 make defconfig。
+# ============================================================
+
+echo
+echo "========== OpenWrt defconfig =========="
+
+make defconfig V=s
+
+# 再次确认 H68K 没有被配置过程改变
+
+grep -q \
+    '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
+    .config || {
+    echo "错误：defconfig 后 H68K 配置丢失"
+    exit 1
+}
 
 # ============================================================
-# 4. 定位对应 backport 目录
+# 5. 先准备 OpenWrt 原始 Linux 6.18
 # ============================================================
 
-BACKPORT_DIR="target/linux/generic/backport-${KERNEL_PATCHVER}"
+echo
+echo "========== OpenWrt kernel prepare =========="
 
-if [ ! -d "$BACKPORT_DIR" ]; then
-	echo ""
-	echo "ERROR: 找不到对应 backport 目录："
-	echo "  $BACKPORT_DIR"
-	echo ""
-	echo "当前 OpenWrt generic 目录中的 backport："
+make target/linux/prepare -j1 V=s
 
-	find target/linux/generic \
-		-maxdepth 1 \
-		-type d \
-		-name 'backport-*' \
-		-print \
-		| sort || true
+# ============================================================
+# 6. 定位 OpenWrt 实际使用的 Linux 源码
+# ============================================================
 
-	exit 1
+LINUX_DIR="$(
+    find build_dir/target-* \
+        -maxdepth 4 \
+        -type f \
+        -path '*/linux-6.18*/Makefile' \
+        -print 2>/dev/null |
+    while read -r f; do
+        d="${f%/Makefile}"
+
+        if grep -q '^VERSION = 6$' "$f" &&
+           grep -q '^PATCHLEVEL = 18$' "$f"; then
+            echo "$d"
+            break
+        fi
+    done
+)"
+
+if [ -z "$LINUX_DIR" ] || [ ! -f "$LINUX_DIR/Makefile" ]; then
+    echo "错误：无法定位实际 Linux 6.18 源码目录"
+    exit 1
 fi
 
-echo "BBRv3 补丁目录：$BACKPORT_DIR"
+echo "Linux source：$LINUX_DIR"
 
 # ============================================================
-# 5. BBRv3 补丁列表
-#
-# YAOF 25.12 实际包含：
-#
-#   0001 ~ 0018
-#
-# 0019：
-#   x86 CFI/BPF 专用
-#   ARM64 / H68K 不使用
+# 7. 再次确认实际 kernel 版本
 # ============================================================
 
-PATCH_LIST="
-010-0001-net-tcp_bbr-broaden-app-limited-rate-sample-detectio.patch
-010-0002-net-tcp_bbr-v2-shrink-delivered_mstamp-first_tx_msta.patch
-010-0003-net-tcp_bbr-v2-snapshot-packets-in-flight-at-transmi.patch
-010-0004-net-tcp_bbr-v2-count-packets-lost-over-TCP-rate-samp.patch
-010-0005-net-tcp_bbr-v2-export-FLAG_ECE-in-rate_sample.is_ece.patch
-010-0006-net-tcp_bbr-v2-introduce-ca_ops-skb_marked_lost-CC-m.patch
-010-0007-net-tcp_bbr-v2-adjust-skb-tx.in_flight-upon-merge-in.patch
-010-0008-net-tcp_bbr-v2-adjust-skb-tx.in_flight-upon-split-in.patch
-010-0009-net-tcp-add-new-ca-opts-flag-TCP_CONG_WANTS_CE_EVENT.patch
-010-0010-net-tcp-re-generalize-TSO-sizing-in-TCP-CC-module-AP.patch
-010-0011-net-tcp-add-fast_ack_mode-1-skip-rwin-check-in-tcp_f.patch
-010-0012-net-tcp_bbr-v2-record-app-limited-status-of-TLP-repa.patch
-010-0013-net-tcp_bbr-v2-inform-CC-module-of-losses-repaired-b.patch
-010-0014-net-tcp_bbr-v2-introduce-is_acking_tlp_retrans_seq-i.patch
-010-0015-tcp-introduce-per-route-feature-RTAX_FEATURE_ECN_LOW.patch
-010-0016-net-tcp_bbr-v3-update-TCP-bbr-congestion-control-mod.patch
-010-0017-net-tcp_bbr-v3-ensure-ECN-enabled-BBR-flows-set-ECT-.patch
-010-0018-tcp-export-TCPI_OPT_ECN_LOW-in-tcp_info-tcpi_options.patch
-"
+LINUX_VERSION="$(
+    awk -F' = ' '
+        /^VERSION =/     { v=$2 }
+        /^PATCHLEVEL =/  { p=$2 }
+        /^SUBLEVEL =/    { s=$2 }
+        END {
+            if (v != "" && p != "" && s != "")
+                print v "." p "." s
+        }
+    ' "$LINUX_DIR/Makefile"
+)"
+
+case "$LINUX_VERSION" in
+    6.18.*)
+        ;;
+    *)
+        echo "错误：实际 Linux 源码不是 6.18.x"
+        echo "检测到：$LINUX_VERSION"
+        exit 1
+        ;;
+esac
+
+echo "实际 Linux 版本：$LINUX_VERSION"
 
 # ============================================================
-# 6. 清理错误的 BBR3 补丁
+# 8. Google BBR 官方固定版本
 #
-# 防止以前脚本错误加入：
-#   0019 x86 专用补丁
-#
+# 不使用 floating branch 来避免未来 v3 branch 改动导致
+# CI 得到不同源码。
 # ============================================================
+
+BBR_REPO="https://github.com/google/bbr.git"
+
+BBR_BASE="648e04a805652f513af04b47035cde896addf9b0"
+BBR_HEAD="90210de4b779d40496dee0b89081780eeddf2a60"
+
+BBR_BASE_NAME="Linux 6.13.7"
+BBR_HEAD_NAME="Google BBR v3 release"
+
+# ============================================================
+# 9. 工作目录
+# ============================================================
+
+WORK_DIR="$(
+    mktemp -d \
+        "${TMPDIR:-/tmp}/openwrt-google-bbr3.XXXXXX"
+)"
+
+cleanup() {
+    rm -rf "$WORK_DIR"
+}
+
+trap cleanup EXIT INT TERM
+
+GOOGLE_DIR="$WORK_DIR/google-bbr"
+SERIES_DIR="$WORK_DIR/series"
+
+mkdir -p "$SERIES_DIR"
+
+# ============================================================
+# 10. 获取 Google 官方 BBR 仓库
+#
+# 使用 shallow fetch。
+#
+# BBR_BASE -> BBR_HEAD 的实际官方提交序列很短。
+# 这里给足 128 层，避免使用整个 Linux 历史。
+# ============================================================
+
+echo
+echo "========== 获取 Google 官方 BBR v3 =========="
+
+git init -q "$GOOGLE_DIR"
+
+git -C "$GOOGLE_DIR" remote add google-bbr "$BBR_REPO"
+
+git -C "$GOOGLE_DIR" fetch \
+    --no-tags \
+    --depth=128 \
+    google-bbr \
+    "$BBR_HEAD"
+
+# ============================================================
+# 11. 确认两个固定提交存在
+# ============================================================
+
+git -C "$GOOGLE_DIR" cat-file -e \
+    "${BBR_BASE}^{commit}" 2>/dev/null || {
+    echo "错误：Google BBR 6.13.7 基线提交不存在"
+    exit 1
+}
+
+git -C "$GOOGLE_DIR" cat-file -e \
+    "${BBR_HEAD}^{commit}" 2>/dev/null || {
+    echo "错误：Google BBR v3 最终提交不存在"
+    exit 1
+}
+
+# ============================================================
+# 12. 确认 BBR_BASE 是 BBR_HEAD 的祖先
+# ============================================================
+
+git -C "$GOOGLE_DIR" merge-base \
+    --is-ancestor \
+    "$BBR_BASE" \
+    "$BBR_HEAD" || {
+
+    echo "错误：Google BBR v3 历史异常"
+    echo "无法确认 Linux 6.13.7 是 v3 的基线"
+    exit 1
+}
+
+# ============================================================
+# 13. 确认 Google v3 源码确实是 Linux 6.13.7
+# ============================================================
+
+GOOGLE_VERSION="$(
+    git -C "$GOOGLE_DIR" show "$BBR_HEAD:Makefile" |
+    awk -F' = ' '
+        /^VERSION =/     { v=$2 }
+        /^PATCHLEVEL =/  { p=$2 }
+        /^SUBLEVEL =/    { s=$2 }
+        END {
+            if (v != "" && p != "" && s != "")
+                print v "." p "." s
+        }
+    '
+)"
+
+if [ "$GOOGLE_VERSION" != "6.13.7" ]; then
+    echo "错误：Google BBR v3 基线版本异常"
+    echo "检测到：$GOOGLE_VERSION"
+    exit 1
+fi
+
+echo "Google BBR 基线：$GOOGLE_VERSION"
+
+# ============================================================
+# 14. 生成官方 BBR kernel patch series
+#
+# 只取：
+#
+#   include/**
+#   net/**
+#
+# 排除：
+#
+#   net/ipv4/tcp_bbr1.c
+#
+# 因为 tcp_bbr1.c 是 Google BBRv1 测试副本，
+# 不是 H68K 所需的 BBRv3。
+#
+# iproute2/test/README 不在 include/net 中，因此自然不会进入。
+# ============================================================
+
+echo
+echo "========== 提取 Google 官方 BBR kernel 提交 =========="
+
+git -C "$GOOGLE_DIR" format-patch \
+    --no-signature \
+    --no-stat \
+    --no-numbered \
+    --output-directory "$SERIES_DIR" \
+    "$BBR_BASE..$BBR_HEAD" \
+    -- \
+    'include/**' \
+    'net/**' \
+    ':(exclude)net/ipv4/tcp_bbr1.c'
+
+PATCH_COUNT="$(
+    find "$SERIES_DIR" \
+        -maxdepth 1 \
+        -type f \
+        -name '*.patch' |
+    wc -l
+)"
+
+if [ "$PATCH_COUNT" -eq 0 ]; then
+    echo "错误：没有提取到 Google BBR kernel patch"
+    exit 1
+fi
+
+echo "Google kernel patch 数量：$PATCH_COUNT"
+
+# ============================================================
+# 15. 严格检查 patch 内容
+#
+# 不允许：
+#   tcp_bbr1.c
+#   iproute2
+#   gtests
+#   userspace
+#
+# 允许：
+#   include/*
+#   net/*
+# ============================================================
+
+echo
+echo "========== 检查 Google BBR patch 内容 =========="
+
+for p in "$SERIES_DIR"/*.patch; do
+
+    if grep -Eq \
+        '^[+][+][+] b/.*tcp_bbr1\.c$|^[-]{3} a/.*tcp_bbr1\.c$' \
+        "$p"; then
+
+        echo "错误：检测到 tcp_bbr1.c"
+        echo "文件：$p"
+        exit 1
+    fi
+
+    while read -r path; do
+
+        [ -z "$path" ] && continue
+
+        case "$path" in
+            include/*|net/*)
+                ;;
+            *)
+                echo "错误：Google BBR kernel patch 出现非法路径"
+                echo "路径：$path"
+                echo "补丁：$p"
+                exit 1
+                ;;
+        esac
+
+    done < <(
+        sed -n \
+            -E \
+            's/^\+\+\+ b\/(.+)$/\1/p' \
+            "$p"
+    )
+done
+
+# ============================================================
+# 16. 在实际 OpenWrt Linux 6.18 上建立临时 Git 基线
+#
+# 重要：
+#
+# 不是拿 Google repo 与 OpenWrt 做 merge-base。
+#
+# 而是：
+#
+#   当前 OpenWrt Linux 6.18
+#              ↓
+#       建立真实基线 commit
+#              ↓
+#       逐个应用 Google BBR 官方 commit
+#              ↓
+#       失败立即停止
+#
+# 这样才能真正检测 6.13.7 → 6.18 的 API/backport 冲突。
+# ============================================================
+
+echo
+echo "========== 建立 Linux 6.18 backport 基线 =========="
+
+cd "$LINUX_DIR"
+
+if [ -e .git ]; then
+    echo "错误：Linux 源码目录已经存在 .git"
+    echo "为避免污染已有 Git 仓库，停止。"
+    exit 1
+fi
+
+git init -q .
+
+git config user.name "OpenWrt Google BBRv3 Backport"
+git config user.email "bbrv3-backport@localhost"
+
+git add -A
+
+git commit \
+    -q \
+    -m "OpenWrt Linux ${LINUX_VERSION} BBRv3 backport base"
+
+OPENWRT_BASE="$(git rev-parse HEAD)"
+
+echo "OpenWrt Linux 基线：$OPENWRT_BASE"
+
+# ============================================================
+# 17. 把 Google BBR 官方对象放入当前 kernel Git 对象库
+#
+# 这样 git am --3way 才能找到官方 patch 所记录的
+# 原始 blob。
+# ============================================================
+
+echo
+echo "========== 导入 Google BBR 官方 Git 对象 =========="
+
+git remote add google-bbr "$BBR_REPO"
+
+git fetch \
+    --no-tags \
+    --depth=128 \
+    google-bbr \
+    "$BBR_HEAD"
+
+# ============================================================
+# 18. 再次确认 Google BBR 基线对象存在
+# ============================================================
+
+git cat-file -e \
+    "${BBR_BASE}^{commit}" 2>/dev/null || {
+
+    echo "错误：当前 kernel Git 对象库中没有 Google BBR 基线"
+    echo "无法进行可靠 3-way backport"
+    exit 1
+}
+
+# ============================================================
+# 19. 逐个应用官方 Google BBR kernel patch
+#
+# 绝不自动解决冲突。
+#
+# 如果某个 commit：
+#   - 与 Linux 6.18 API 不兼容
+#   - 上游已经发生结构变化
+#   - OpenWrt patch 改变了上下文
+#   - 需要人工语义调整
+#
+# 就直接失败。
+#
+# 这比“强行成功但代码错误”安全得多。
+# ============================================================
+
+echo
+echo "========== 开始 Google BBR → Linux 6.18 backport =========="
+
+PATCH_NO=0
+
+for PATCH in "$SERIES_DIR"/*.patch; do
+
+    PATCH_NO=$((PATCH_NO + 1))
+
+    echo
+    echo "------------------------------------------------------------"
+    echo "应用 [$PATCH_NO/$PATCH_COUNT]"
+    echo "文件：$(basename "$PATCH")"
+    echo "------------------------------------------------------------"
+
+    if ! git am \
+        --3way \
+        --no-verify \
+        "$PATCH"; then
+
+        echo
+        echo "============================================================"
+        echo "错误：Google BBR patch 无法安全 backport 到 Linux 6.18"
+        echo "============================================================"
+        echo
+        echo "失败补丁：$PATCH"
+        echo
+        echo "当前 patch："
+        git am --show-current-patch=diff || true
+        echo
+        echo "不会自动猜测或强行解决冲突。"
+        echo "这是故意的 fail-closed 行为。"
+        echo
+
+        git am --abort || true
+
+        exit 1
+    fi
+done
+
+# ============================================================
+# 20. 检查 Git 状态
+# ============================================================
+
+if ! git diff --quiet; then
+    echo "错误：BBRv3 backport 后工作区仍有未提交修改"
+    exit 1
+fi
+
+# ============================================================
+# 21. 生成最终 OpenWrt 单 patch
+#
+# 这里不是直接使用 Google 原始 patch。
+#
+# 而是：
+#
+#   OpenWrt Linux 6.18
+#          ↓
+#   Google 官方 BBRv3 commits
+#          ↓
+#   已经成功 rebase 到 6.18
+#          ↓
+#   生成适用于当前 OpenWrt 的最终 patch
+#
+# 这是整个脚本最重要的一步。
+# ============================================================
+
+FINAL_PATCH_DIR="$OLDPWD/target/linux/generic/pending-${KERNEL_PATCHVER}"
+
+mkdir -p "$FINAL_PATCH_DIR"
+
+FINAL_PATCH="$FINAL_PATCH_DIR/999-bbrv3-google.patch"
 
 rm -f \
-	"$BACKPORT_DIR/010-0019-x86-cfi-bpf-Add-tso_segs-and-skb_marked_lost-to-bpf_.patch"
+    "$FINAL_PATCH_DIR"/999-bbrv3-google.patch \
+    "$FINAL_PATCH_DIR"/999-bbrv3-google-*.patch
+
+echo
+echo "========== 生成最终 OpenWrt BBRv3 patch =========="
+
+git diff \
+    --binary \
+    "$OPENWRT_BASE" \
+    HEAD \
+    -- \
+    include \
+    net \
+    ':(exclude)net/ipv4/tcp_bbr1.c' \
+    > "$FINAL_PATCH"
+
+[ -s "$FINAL_PATCH" ] || {
+    echo "错误：最终 BBRv3 patch 为空"
+    exit 1
+}
 
 # ============================================================
-# 7. 下载 BBRv3 补丁
+# 22. 严格检查最终 patch 路径
 # ============================================================
 
-echo ""
-echo "============================================================"
-echo "开始安装 BBRv3 补丁"
-echo "============================================================"
+echo
+echo "========== 检查最终 patch =========="
 
-PATCH_COUNT=0
+while read -r path; do
 
-for PATCH in $PATCH_LIST; do
+    [ -z "$path" ] && continue
 
-	TARGET="$BACKPORT_DIR/$PATCH"
-	URL="$BBR3_REPO/$PATCH"
+    case "$path" in
+        include/*|net/*)
+            ;;
+        *)
+            echo "错误：最终 BBRv3 patch 出现非法路径"
+            echo "路径：$path"
+            exit 1
+            ;;
+    esac
 
-	PATCH_COUNT=$((PATCH_COUNT + 1))
+    case "$path" in
+        net/ipv4/tcp_bbr1.c)
+            echo "错误：最终 patch 不允许包含 tcp_bbr1.c"
+            exit 1
+            ;;
+    esac
 
-	echo ""
-	echo "[$PATCH_COUNT/18]"
-	echo "  $PATCH"
+done < <(
+    git diff \
+        --name-only \
+        "$OPENWRT_BASE" \
+        HEAD \
+        -- \
+        include \
+        net
+)
 
-	# --------------------------------------------------------
-	# 已存在则验证，不盲目覆盖
-	# --------------------------------------------------------
+# ============================================================
+# 23. 检查最终 patch 是否包含 BBRv3 核心标识
+# ============================================================
 
-	if [ -f "$TARGET" ] && [ -s "$TARGET" ]; then
+grep -q \
+    '^+#define BBR_VERSION[[:space:]]*3' \
+    "$FINAL_PATCH" || {
 
-		echo "  已存在，检查文件..."
+    echo "错误：最终 patch 没有检测到 BBR_VERSION 3"
+    exit 1
+}
 
-		if grep -q '^Subject:.*BBR' "$TARGET"; then
-			echo "  OK：补丁有效"
-			continue
-		fi
+# ============================================================
+# 24. 检查 BBRv3 核心字段
+# ============================================================
 
-		echo "  警告：现有文件异常，重新下载"
-		rm -f "$TARGET"
-	fi
+for marker in \
+    'bw_lo' \
+    'bw_hi' \
+    'inflight_lo' \
+    'inflight_hi' \
+    'BBR_BW_PROBE_UP' \
+    'BBR_BW_PROBE_DOWN' \
+    'BBR_BW_PROBE_CRUISE' \
+    'BBR_BW_PROBE_REFILL' \
+    'bbr_ecn_alpha_gain'
+do
 
-	# --------------------------------------------------------
-	# 下载
-	# --------------------------------------------------------
-
-	TMP_FILE="${TARGET}.tmp"
-
-	rm -f "$TMP_FILE"
-
-	curl -fL \
-		--retry 5 \
-		--retry-delay 2 \
-		--connect-timeout 20 \
-		--max-time 300 \
-		"$URL" \
-		-o "$TMP_FILE"
-
-	# --------------------------------------------------------
-	# 基本完整性检查
-	# --------------------------------------------------------
-
-	if [ ! -s "$TMP_FILE" ]; then
-		echo "ERROR: 下载文件为空：$PATCH"
-		rm -f "$TMP_FILE"
-		exit 1
-	fi
-
-	# GitHub 404/错误页面不能作为补丁
-	if ! grep -q '^From ' "$TMP_FILE"; then
-		echo "ERROR: 文件不是有效 Git Patch：$PATCH"
-		rm -f "$TMP_FILE"
-		exit 1
-	fi
-
-	if ! grep -q '^Subject:' "$TMP_FILE"; then
-		echo "ERROR: Patch 缺少 Subject：$PATCH"
-		rm -f "$TMP_FILE"
-		exit 1
-	fi
-
-	mv "$TMP_FILE" "$TARGET"
-
-	echo "  OK：安装完成"
+    grep -q "$marker" "$FINAL_PATCH" || {
+        echo "错误：最终 BBRv3 patch 缺少核心标识：$marker"
+        exit 1
+    }
 
 done
 
 # ============================================================
-# 8. 检查 18 个补丁是否全部存在
+# 25. 删除当前 Git 仓库
+#
+# 后面 make target/linux/clean 会重新生成 kernel source。
+# 这里先主动删除，避免 .git 被后续 OpenWrt 构建系统带走。
 # ============================================================
 
-echo ""
-echo "============================================================"
-echo "检查 BBRv3 补丁完整性"
-echo "============================================================"
+cd "$OLDPWD"
 
-MISSING=0
+rm -rf "$LINUX_DIR/.git"
 
-for PATCH in $PATCH_LIST; do
+# ============================================================
+# 26. 重新 clean
+#
+# 目的是确保下面的 prepare 真正从 OpenWrt kernel source
+# + 999-bbrv3-google.patch 重新构建，而不是使用刚才
+# Git backport 后的工作树。
+# ============================================================
 
-	if [ ! -s "$BACKPORT_DIR/$PATCH" ]; then
-		echo "缺少：$PATCH"
-		MISSING=$((MISSING + 1))
-	fi
+echo
+echo "========== 清理临时 kernel source =========="
+
+make target/linux/clean
+
+# ============================================================
+# 27. 重新 prepare
+#
+# 现在 OpenWrt 会正式按照：
+#
+#   generic/backport-6.18
+#   generic/pending-6.18
+#   ...
+#   999-bbrv3-google.patch
+#
+# 重新应用全部 patch。
+# ============================================================
+
+echo
+echo "========== 重新应用 OpenWrt BBRv3 patch =========="
+
+make target/linux/prepare -j1 V=s
+
+# ============================================================
+# 28. 重新定位 kernel source
+# ============================================================
+
+LINUX_DIR="$(
+    find build_dir/target-* \
+        -maxdepth 4 \
+        -type f \
+        -path '*/linux-6.18*/Makefile' \
+        -print 2>/dev/null |
+    while read -r f; do
+        d="${f%/Makefile}"
+
+        if grep -q '^VERSION = 6$' "$f" &&
+           grep -q '^PATCHLEVEL = 18$' "$f"; then
+            echo "$d"
+            break
+        fi
+    done
+)"
+
+[ -n "$LINUX_DIR" ] || {
+    echo "错误：重新 prepare 后无法找到 Linux 6.18"
+    exit 1
+}
+
+# ============================================================
+# 29. 最终源码验证
+# ============================================================
+
+BBR_SOURCE="$LINUX_DIR/net/ipv4/tcp_bbr.c"
+
+[ -f "$BBR_SOURCE" ] || {
+    echo "错误：找不到 tcp_bbr.c"
+    exit 1
+}
+
+echo
+echo "========== 最终 BBRv3 源码检查 =========="
+
+grep -q \
+    '^#define BBR_VERSION[[:space:]]*3' \
+    "$BBR_SOURCE" || {
+
+    echo "错误：最终 Linux 源码不是 BBRv3"
+    exit 1
+}
+
+for marker in \
+    'bw_lo' \
+    'bw_hi' \
+    'inflight_lo' \
+    'inflight_hi' \
+    'BBR_BW_PROBE_UP' \
+    'BBR_BW_PROBE_DOWN' \
+    'BBR_BW_PROBE_CRUISE' \
+    'BBR_BW_PROBE_REFILL' \
+    'bbr_ecn_alpha_gain'
+do
+
+    grep -q "$marker" "$BBR_SOURCE" || {
+        echo "错误：最终 tcp_bbr.c 缺少：$marker"
+        exit 1
+    }
 
 done
 
-if [ "$MISSING" -ne 0 ]; then
-	echo ""
-	echo "ERROR: 缺少 $MISSING 个 BBRv3 补丁"
-	exit 1
-fi
-
-echo "OK：BBRv3 18 个补丁全部存在"
-
 # ============================================================
-# 9. 删除 0019 x86 专用补丁
+# 30. 检查没有引入 BBR1 测试副本
 # ============================================================
 
-if find "$BACKPORT_DIR" \
-	-maxdepth 1 \
-	-type f \
-	-name '*0019*x86*cfi*bpf*.patch' \
-	-print \
-	| grep -q .; then
-
-	echo ""
-	echo "删除 x86 专用 BBRv3 0019 补丁"
-
-	find "$BACKPORT_DIR" \
-		-maxdepth 1 \
-		-type f \
-		-name '*0019*x86*cfi*bpf*.patch' \
-		-delete
-
+if [ -e "$LINUX_DIR/net/ipv4/tcp_bbr1.c" ]; then
+    echo "错误：发现 tcp_bbr1.c"
+    echo "本项目不允许把 Google BBR1 测试副本加入 H68K kernel"
+    exit 1
 fi
 
 # ============================================================
-# 10. 自动确定 OpenWrt generic kernel config 文件
+# 31. 显示最终 BBR 版本
 # ============================================================
 
-CONFIG_FILE=""
-
-if [ -f "target/linux/generic/config-${KERNEL_PATCHVER}" ]; then
-	CONFIG_FILE="target/linux/generic/config-${KERNEL_PATCHVER}"
-elif [ -f "target/linux/generic/config-${KERNEL_PATCHVER%%.*}" ]; then
-	CONFIG_FILE="target/linux/generic/config-${KERNEL_PATCHVER%%.*}"
-fi
+echo
+echo "BBR version："
+grep \
+    '^#define BBR_VERSION' \
+    "$BBR_SOURCE"
 
 # ============================================================
-# 11. 如果存在 generic kernel config
-#     自动启用 BBR
+# 32. 最终 kernel 编译验证
+#
+# 只验证 kernel。
+# 后面的主 workflow 仍然会进行完整 OpenWrt 编译。
 # ============================================================
 
-if [ -n "$CONFIG_FILE" ]; then
-
-	echo ""
-	echo "============================================================"
-	echo "配置 BBR"
-	echo "============================================================"
-
-	echo "Config：$CONFIG_FILE"
-
-	# --------------------------------------------------------
-	# CONFIG_TCP_CONG_BBR
-	# --------------------------------------------------------
-
-	if grep -q '^CONFIG_TCP_CONG_BBR=' "$CONFIG_FILE"; then
-
-		sed -i \
-			's/^CONFIG_TCP_CONG_BBR=.*/CONFIG_TCP_CONG_BBR=y/' \
-			"$CONFIG_FILE"
-
-	else
-
-		printf '%s\n' \
-			'CONFIG_TCP_CONG_BBR=y' \
-			>> "$CONFIG_FILE"
-
-	fi
-
-	# --------------------------------------------------------
-	# CONFIG_NET_SCH_FQ
-	# --------------------------------------------------------
-
-	if grep -q '^CONFIG_NET_SCH_FQ=' "$CONFIG_FILE"; then
-
-		sed -i \
-			's/^CONFIG_NET_SCH_FQ=.*/CONFIG_NET_SCH_FQ=y/' \
-			"$CONFIG_FILE"
-
-	else
-
-		printf '%s\n' \
-			'CONFIG_NET_SCH_FQ=y' \
-			>> "$CONFIG_FILE"
-
-	fi
-
-	# --------------------------------------------------------
-	# DEFAULT BBR
-	#
-	# OpenWrt / Linux 不同版本的 Kconfig 可能存在：
-	#
-	#   CONFIG_DEFAULT_BBR
-	#
-	# 也可能由：
-	#
-	#   CONFIG_DEFAULT_TCP_CONG
-	#
-	# 控制。
-	#
-	# 因此这里只处理已经存在的 CONFIG_DEFAULT_BBR，
-	# 不人为创建未知 Kconfig。
-	# --------------------------------------------------------
-
-	if grep -q '^CONFIG_DEFAULT_BBR=' "$CONFIG_FILE"; then
-
-		sed -i \
-			's/^CONFIG_DEFAULT_BBR=.*/CONFIG_DEFAULT_BBR=y/' \
-			"$CONFIG_FILE"
-
-	fi
-
-	echo ""
-	echo "BBR kernel config："
-
-	grep -E \
-		'^CONFIG_TCP_CONG_BBR=|^CONFIG_NET_SCH_FQ=|^CONFIG_DEFAULT_BBR=' \
-		"$CONFIG_FILE" \
-		|| true
-
-else
-
-	echo ""
-	echo "注意："
-	echo "没有找到 generic kernel config 文件。"
-	echo "不强行创建未知 config 文件。"
-	echo ""
-	echo "BBRv3 源码补丁仍然已经安装。"
-	echo "OpenWrt 构建时请确保 CONFIG_TCP_CONG_BBR=y。"
-
-fi
-
-# ============================================================
-# 12. 检查补丁是否包含真正的 BBRv3 核心
-# ============================================================
-
-BBR_CORE="$BACKPORT_DIR/010-0016-net-tcp_bbr-v3-update-TCP-bbr-congestion-control-mod.patch"
-
-if [ ! -f "$BBR_CORE" ]; then
-	echo "ERROR: BBRv3 核心补丁不存在"
-	exit 1
-fi
-
-if ! grep -q 'BBRv3' "$BBR_CORE"; then
-	echo "ERROR: BBRv3 核心补丁内容异常"
-	exit 1
-fi
-
-if ! grep -q 'CONFIG_TCP_CONG_BBR' "$BBR_CORE"; then
-	echo "ERROR: BBRv3 核心补丁没有找到 CONFIG_TCP_CONG_BBR"
-	exit 1
-fi
-
-# ============================================================
-# 13. 输出最终状态
-# ============================================================
-
-echo ""
+echo
 echo "============================================================"
-echo " BBRv3 安装完成"
+echo " 开始 Linux 6.18 + Google BBRv3 kernel compile"
 echo "============================================================"
-echo ""
-echo "OpenWrt Kernel : $KERNEL_PATCHVER"
-echo "Patch Dir      : $BACKPORT_DIR"
-echo "BBRv3 Patches  : 0001 ~ 0018"
-echo "x86 Patch 0019 : 已排除"
-echo ""
-echo "Kernel symbol:"
-echo "  CONFIG_TCP_CONG_BBR=y"
-echo ""
-echo "BBRv3 核心："
-echo "  net/ipv4/tcp_bbr.c"
-echo ""
-echo "运行时拥塞控制名称："
-echo "  bbr"
-echo ""
-echo "注意："
-echo "  不存在也不应该人为创建 CONFIG_TCP_CONG_BBR3。"
-echo "  YAOF 的 BBRv3 使用原有 CONFIG_TCP_CONG_BBR。"
-echo ""
+echo
+
+make target/linux/compile -j1 V=s
+
+# ============================================================
+# 33. 最终结果
+# ============================================================
+
+echo
+echo "============================================================"
+echo " Google BBRv3 backport 成功"
+echo "============================================================"
+echo
+echo "目标      : HINLINK H68K"
+echo "OpenWrt   : Mainline"
+echo "Kernel    : Linux 6.18"
+echo "BBR       : Google TCP BBRv3"
+echo "BBR base  : Linux 6.13.7"
+echo "BBR final : Google official v3"
+echo
+echo "OpenWrt patch："
+echo "$FINAL_PATCH"
+echo
+echo "Kernel source："
+echo "$LINUX_DIR"
+echo
 echo "============================================================"
 echo " public1.sh OK"
 echo "============================================================"
