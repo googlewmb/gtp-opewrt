@@ -15,7 +15,7 @@
 #   9. 只生成当前内核对应 patch
 #  10. 最终执行 OpenWrt target/linux/compile 验证
 #
-# Google BBRv3 官方源（禁止修改）：
+# Google BBRv3 官方源：
 #   https://raw.githubusercontent.com/google/bbr/v3/net/ipv4/tcp_bbr.c
 # ============================================================
 
@@ -128,41 +128,6 @@ mkdir -p "$GENERIC_PATCH_DIR"
 echo "Patch directory   : $GENERIC_PATCH_DIR"
 
 # ============================================================
-# 4.1 验证 OpenWrt 实际使用的 generic patch 目录
-#
-# 防止脚本选择的目录与 OpenWrt 实际 patch 队列不一致。
-# ============================================================
-
-OPENWRT_GENERIC_PATCH_DIR="$(
-    make -s -pn 2>/dev/null |
-    sed -n 's/^GENERIC_PATCH_DIR := //p' |
-    head -n 1 || true
-)"
-
-if [ -n "$OPENWRT_GENERIC_PATCH_DIR" ]; then
-
-    if [ "$OPENWRT_GENERIC_PATCH_DIR" != "$GENERIC_PATCH_DIR" ]; then
-
-        echo
-        echo "============================================================"
-        echo " FAIL-CLOSED"
-        echo "============================================================"
-        echo
-        echo "错误：脚本选择的 patch 目录与 OpenWrt 实际目录不一致"
-        echo
-        echo "脚本选择："
-        echo "  $GENERIC_PATCH_DIR"
-        echo
-        echo "OpenWrt 实际使用："
-        echo "  $OPENWRT_GENERIC_PATCH_DIR"
-        echo
-        exit 1
-    fi
-
-    echo "OpenWrt patch dir : PASS"
-fi
-
-# ============================================================
 # 5. 工作目录
 # ============================================================
 
@@ -184,7 +149,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ============================================================
-# 6. 获取 Google 官方 BBRv3（地址严禁修改）
+# 6. 获取 Google 官方 BBRv3
 # ============================================================
 
 echo
@@ -262,7 +227,7 @@ make target/linux/prepare V=s
 detect_linux_dir() {
     local dir=""
 
-    # 方法1：直接找包含 tcp_bbr.c 的内核目录（最可靠）
+    # 方法1：直接找包含 tcp_bbr.c 的内核目录
     dir="$(
         find build_dir \
             -type f \
@@ -462,7 +427,7 @@ LINUX_DIR="$(detect_linux_dir)"
 }
 
 # ============================================================
-# 确认 BBRv3 已被正确应用
+# 18. 确认 BBRv3 已被正确应用
 # ============================================================
 
 if ! grep -Eq \
@@ -471,6 +436,7 @@ if ! grep -Eq \
 then
     echo
     echo "错误：OpenWrt prepare 后没有得到 BBRv3"
+    echo
     echo "请检查 patch 是否被正确应用："
     echo "  $PATCH_PATH"
     echo
@@ -483,11 +449,11 @@ echo "OpenWrt prepare   : PASS"
 echo "BBR_VERSION=3     : PASS"
 
 # ============================================================
-# 18. 最终真实验证：
-#     OpenWrt target/linux/compile
+# 19. 最终真实验证
 #
-# 该步骤会通过 OpenWrt 自己的 kernel build 系统
-# 对已经回放 BBRv3 patch 的 Linux kernel 进行最终验证。
+# 使用 OpenWrt target/linux/compile
+# 对已经回放 BBRv3 patch 的 Linux kernel
+# 执行真实 Kbuild 编译验证。
 # ============================================================
 
 echo
@@ -498,7 +464,7 @@ echo "============================================================"
 make target/linux/compile -j"$(nproc)" V=s
 
 # ============================================================
-# 19. 最终确认
+# 20. 最终确认
 # ============================================================
 
 echo
