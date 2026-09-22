@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repair only the two verified specifier mismatches in daed f045ecd.
+"""Repair the verified GraphQL catalog mismatch in daed f045ecd.
 
 Keep the dependency versions and integrity hashes unchanged and let pnpm's
 frozen install verify all dependency resolutions after this repair.
@@ -16,7 +16,9 @@ def repair(root):
     text = path.read_text()
     lock = yaml.safe_load(text)
     workspace = yaml.safe_load((root / "pnpm-workspace.yaml").read_text())
-    fixes = {(".", "@graphql-codegen/cli"): "6.1.1", ("apps/web", "vite"): "^7.3.1"}
+    # Vite intentionally retains ^7.3.1: pnpm applies workspace overrides
+    # before comparing importer specifiers, even when the manifest uses catalog:.
+    fixes = {(".", "@graphql-codegen/cli"): "6.1.1"}
     for (name, package), specifier in fixes.items():
         manifest = json.loads((root / name / "package.json").read_text())
         assert manifest["devDependencies"][package] == "catalog:", (name, package)
