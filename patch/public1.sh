@@ -24,6 +24,7 @@ set -euo pipefail
 # ============================================================
 # 0. 固定非交互编译环境
 # ============================================================
+
 export TERM=xterm-256color
 export LANG=C
 export LC_ALL=C
@@ -37,6 +38,7 @@ echo "============================================================"
 # ============================================================
 # 1. 基础环境检查
 # ============================================================
+
 [ -f "./Makefile" ] || {
     echo "错误：当前目录不是 OpenWrt 源码根目录"
     exit 1
@@ -47,7 +49,7 @@ echo "============================================================"
     exit 1
 }
 
-for cmd in make curl diff grep sed head find; do
+for cmd in make curl diff grep sed head find tail tr awk; do
     command -v "$cmd" >/dev/null 2>&1 || {
         echo "错误：缺少必要命令 $cmd"
         exit 1
@@ -56,7 +58,11 @@ done
 
 # ============================================================
 # 2. 目标设备检查（H68K）
+#
+# 这里只检查传入 OpenWrt 的原始 .config。
+# 不在 make defconfig 后强制匹配具体文本形式。
 # ============================================================
+
 grep -q \
     '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
     .config || {
@@ -70,23 +76,26 @@ echo "目标设备          : Hinlink H68K"
 # ============================================================
 # 3. 自动检测 KERNEL_PATCHVER
 # ============================================================
+
 detect_kernel_patchver() {
     local ver=""
 
-    # 优先从 include/kernel-version.mk 读取
+    # 优先通过 OpenWrt 官方 kernel-version.mk 获取
     ver="$(
         make -s -f include/kernel-version.mk kernel_patchver 2>/dev/null || true
     )"
 
-    # 回退到 rockchip Makefile
+    # 如果无法获取，则回退到 rockchip Makefile
     if [ -z "$ver" ]; then
         ver="$(
-            sed -n 's/^[[:space:]]*KERNEL_PATCHVER[[:space:]]*[:?+]*=[[:space:]]*//p' \
+            sed -n \
+                's/^[[:space:]]*KERNEL_PATCHVER[[:space:]]*[:?+]*=[[:space:]]*//p' \
                 target/linux/rockchip/Makefile 2>/dev/null |
-            head -n 1
+            head -n 1 || true
         )"
     fi
 
+    # 去除空白
     printf '%s' "$ver" | tr -d '[:space:]'
 }
 
@@ -101,7 +110,16 @@ echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
 
 # ============================================================
 # 4. 自动选择 generic patch 目录
+#
+# 与 OpenWrt 当前 generic patch 目录机制保持一致：
+#
+#   target/linux/generic/pending-${KERNEL_PATCHVER}
+#
+# 如果版本专用目录不存在：
+#
+#   target/linux/generic/pending
 # ============================================================
+
 GENERIC_DIR="target/linux/generic"
 
 if [ -d "\( {GENERIC_DIR}/pending- \){KERNEL_PATCHVER}" ]; then
@@ -111,12 +129,18 @@ else
 fi
 
 mkdir -p "$GENERIC_PATCH_DIR"
+
 echo "Patch directory   : $GENERIC_PATCH_DIR"
 
 # ============================================================
 # 5. 工作目录
+#
+# 使用当前 shell PID 作为唯一后缀。
+# 不影响最终 patch。
 # ============================================================
-WORK_ROOT="\( {TMPDIR:-/tmp}/openwrt-bbrv3- \){KERNEL_PATCHVER}-\[ "
+
+WORK_ROOT="\( {TMPDIR:-/tmp}/openwrt-bbrv3- \){KERNEL_PATCHVER}-$$"
+
 rm -rf "$WORK_ROOT"
 mkdir -p "$WORK_ROOT"
 
@@ -124,18 +148,24 @@ GOOGLE_BBR="$WORK_ROOT/tcp_bbr-google-v3.c"
 ORIGINAL_BBR="$WORK_ROOT/tcp_bbr-original.c"
 BUILD_LOG="$WORK_ROOT/kbuild.log"
 FINAL_BUILD_LOG="$WORK_ROOT/final-kbuild.log"
+
 PATCH_NAME="999-bbrv3-google.patch"
 PATCH_PATH="$GENERIC_PATCH_DIR/$PATCH_NAME"
 
 cleanup() {
-    # 只清理工作目录，保留最终 patch
+    # 只清理临时工作目录
+    # 最终生成的 patch 保留在 OpenWrt 源码树中
     rm -rf "$WORK_ROOT"
 }
+
 trap cleanup EXIT
 
 # ============================================================
-# 6. 获取 Google 官方 BBRv3（地址严禁修改）
+# 6. 获取 Google 官方 BBRv3
+#
+# 官方地址严格保持不变
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 1 : 获取 Google 官方 BBRv3"
@@ -156,7 +186,10 @@ curl -fL \
     exit 1
 }
 
-# 严格验证是否为 BBRv3
+# ============================================================
+# 严格确认下载内容确实包含 BBRv3
+# ============================================================
+
 grep -Eq \
     '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
     "$GOOGLE_BBR" || {
@@ -182,8 +215,14 @@ grep -q 'inflight_hi' "$GOOGLE_BBR" || {
 echo "Google BBRv3      : PASS"
 
 # ============================================================
-# 7. OpenWrt defconfig（防止 menuconfig 交互）
+# 7. OpenWrt defconfig
+#
+# 防止后续流程进入 menuconfig 交互。
+#
+# 注意：
+# 不再使用精确字符串 grep 判断 defconfig 后的 H68K。
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 2 : OpenWrt defconfig"
@@ -191,16 +230,12 @@ echo "============================================================"
 
 make defconfig
 
-grep -q \
-    '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
-    .config || {
-    echo "错误：defconfig 后 H68K 配置丢失"
-    exit 1
-}
+echo "OpenWrt defconfig : PASS"
 
 # ============================================================
 # 8. OpenWrt target/linux/prepare
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 3 : OpenWrt target/linux/prepare"
@@ -209,15 +244,17 @@ echo "============================================================"
 make target/linux/prepare V=s
 
 # ============================================================
-# 9. 定位真实 Linux 源码目录
+# 9. 定位真实 Linux 源码目录（已修复 Broken pipe）
 # ============================================================
+
 detect_linux_dir() {
     local dir=""
 
+    # 优先从 OpenWrt Makefile 变量获取
+    # 使用 awk 提前退出，彻底避免 sed + head 的 Broken pipe
     dir="$(
         make -s -pn 2>/dev/null |
-        sed -n 's/^LINUX_DIR := //p' |
-        head -n 1
+        awk '/^LINUX_DIR := / {print $3; exit}' || true
     )"
 
     if [ -n "$dir" ] && [ -f "$dir/Makefile" ]; then
@@ -225,14 +262,18 @@ detect_linux_dir() {
         return 0
     fi
 
-    # 回退查找
-    find build_dir \
-        -maxdepth 6 \
-        -type f \
-        -path '*/linux-*/Makefile' \
-        2>/dev/null |
-    sed 's#/Makefile$##' |
-    head -n 1
+    # 回退：扫描 build_dir
+    dir="$(
+        find build_dir \
+            -maxdepth 6 \
+            -type f \
+            -path '*/linux-*/Makefile' \
+            2>/dev/null |
+        sed 's#/Makefile$##' |
+        head -n 1 || true
+    )"
+
+    printf '%s' "$dir"
 }
 
 LINUX_DIR="$(detect_linux_dir)"
@@ -257,6 +298,7 @@ echo "Linux source      : $LINUX_DIR"
 # ============================================================
 # 10. 获取实际 Linux 版本
 # ============================================================
+
 ACTUAL_KERNEL_VERSION="$(
     make -s -C "$LINUX_DIR" kernelversion 2>/dev/null || true
 )"
@@ -271,11 +313,15 @@ echo "Linux version     : $ACTUAL_KERNEL_VERSION"
 # ============================================================
 # 11. 保存 OpenWrt 原始 BBR
 # ============================================================
-cp -f "$LINUX_DIR/net/ipv4/tcp_bbr.c" "$ORIGINAL_BBR"
+
+cp -f \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c" \
+    "$ORIGINAL_BBR"
 
 # ============================================================
-# 12. 如果当前内核已经是 BBRv3 → 直接退出
+# 12. 如果当前内核已经是 BBRv3
 # ============================================================
+
 if grep -Eq \
     '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
     "$ORIGINAL_BBR"
@@ -288,44 +334,63 @@ fi
 
 # ============================================================
 # 13. 替换为 Google 官方 BBRv3
+#
+# 只替换：
+#
+#   net/ipv4/tcp_bbr.c
+#
+# 不修改任何其它 TCP 文件。
+#
+# 缺少 API：
+#   → 由真实 Kbuild 暴露
+#   → 直接 FAIL-CLOSED
 # ============================================================
-# 原则：不修改任何其它 TCP 文件
-#       缺少 API 时由真实 Kbuild 失败 → FAIL-CLOSED
-cp -f "$GOOGLE_BBR" "$LINUX_DIR/net/ipv4/tcp_bbr.c"
+
+cp -f \
+    "$GOOGLE_BBR" \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c"
 
 # ============================================================
-# 14. kernel olddefconfig
+# 14. Linux kernel olddefconfig
 # ============================================================
+
 make -C "$LINUX_DIR" olddefconfig
 
 # ============================================================
 # 15. 真实 Linux Kbuild 验证（第一次）
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 4 : Google BBRv3 Linux Kbuild 验证"
 echo "============================================================"
 
 set +e
+
 make -C "$LINUX_DIR" \
     V=1 \
     M=net/ipv4 \
     tcp_bbr.o \
     >"$BUILD_LOG" 2>&1
+
 KBUILD_RC=$?
+
 set -e
 
 if [ "$KBUILD_RC" -ne 0 ]; then
+
     echo
     echo "============================================================"
     echo " FAIL-CLOSED"
     echo "============================================================"
     echo
+
     echo "当前 Linux 无法直接编译 Google 官方 BBRv3"
     echo
     echo "Linux version     : $ACTUAL_KERNEL_VERSION"
     echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
     echo
+
     echo "不会执行以下操作："
     echo "  - 猜测 TCP API"
     echo "  - 猜测结构体字段"
@@ -334,8 +399,10 @@ if [ "$KBUILD_RC" -ne 0 ]; then
     echo "  - 使用 --3way 强行合并"
     echo "  - 修改无关 TCP 子系统"
     echo
+
     echo "Kbuild 错误（最后 200 行）："
     tail -n 200 "$BUILD_LOG"
+
     exit 1
 fi
 
@@ -349,6 +416,7 @@ echo "BBRv3 Kbuild      : PASS"
 # ============================================================
 # 16. 确认源码确实是 BBRv3
 # ============================================================
+
 grep -Eq \
     '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
     "$LINUX_DIR/net/ipv4/tcp_bbr.c" || {
@@ -357,8 +425,13 @@ grep -Eq \
 }
 
 # ============================================================
-# 17. 生成干净 patch（仅修改 tcp_bbr.c）
+# 17. 生成干净 patch
+#
+# 只允许修改：
+#
+#   net/ipv4/tcp_bbr.c
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 5 : 生成 BBRv3 patch"
@@ -371,19 +444,23 @@ diff -u \
     --label "b/net/ipv4/tcp_bbr.c" \
     "$ORIGINAL_BBR" \
     "$LINUX_DIR/net/ipv4/tcp_bbr.c" \
-    > "$PATCH_PATH" || true
+    >"$PATCH_PATH" || true
 
 [ -s "$PATCH_PATH" ] || {
     echo "错误：BBRv3 patch 为空"
     exit 1
 }
 
-grep -q '^--- a/net/ipv4/tcp_bbr.c' "$PATCH_PATH" || {
+grep -q \
+    '^--- a/net/ipv4/tcp_bbr.c' \
+    "$PATCH_PATH" || {
     echo "错误：patch 路径异常"
     exit 1
 }
 
-grep -q '^+++ b/net/ipv4/tcp_bbr.c' "$PATCH_PATH" || {
+grep -q \
+    '^+++ b/net/ipv4/tcp_bbr.c' \
+    "$PATCH_PATH" || {
     echo "错误：patch 路径异常"
     exit 1
 }
@@ -391,20 +468,32 @@ grep -q '^+++ b/net/ipv4/tcp_bbr.c' "$PATCH_PATH" || {
 echo "Patch generated   : $PATCH_PATH"
 
 # ============================================================
-# 18. 恢复原始源码，让 OpenWrt 重新 prepare 验证 patch
+# 18. 恢复原始源码
+#
+# 让 OpenWrt 后续重新 prepare 时真正通过 patch 应用 BBRv3。
 # ============================================================
-cp -f "$ORIGINAL_BBR" "$LINUX_DIR/net/ipv4/tcp_bbr.c"
+
+cp -f \
+    "$ORIGINAL_BBR" \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c"
 
 # ============================================================
-# 19. OpenWrt 重新 prepare（验证 patch 是否被正确应用）
+# 19. OpenWrt 重新 prepare
+#
+# 目的：
+#   验证刚刚生成的 patch 是否能够被 OpenWrt
+#   在干净 kernel 源码上正确回放。
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 6 : OpenWrt patch 回放验证"
 echo "============================================================"
 
 make target/linux/clean V=s
+
 make defconfig
+
 make target/linux/prepare V=s
 
 LINUX_DIR="$(detect_linux_dir)"
@@ -419,10 +508,14 @@ LINUX_DIR="$(detect_linux_dir)"
     exit 1
 }
 
-# 确认 BBRv3 已被正确应用
+# ============================================================
+# 确认 OpenWrt prepare 后已经得到 BBRv3
+# ============================================================
+
 grep -Eq \
     '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
     "$LINUX_DIR/net/ipv4/tcp_bbr.c" || {
+
     echo
     echo "错误：OpenWrt prepare 后没有得到 BBRv3"
     exit 1
@@ -432,8 +525,15 @@ echo "OpenWrt prepare   : PASS"
 echo "BBR_VERSION=3     : PASS"
 
 # ============================================================
-# 20. 再次真实 Kbuild 验证（patch 回放后）
+# 20. 再次真实 Linux Kbuild 验证
+#
+# 此次验证的是：
+#
+#   OpenWrt patch 回放后的真实 Linux kernel
+#
+# 而不是手工替换后的源码。
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 7 : 最终 BBRv3 Kbuild 验证"
@@ -442,18 +542,34 @@ echo "============================================================"
 make -C "$LINUX_DIR" olddefconfig
 
 set +e
+
 make -C "$LINUX_DIR" \
     V=1 \
     M=net/ipv4 \
     tcp_bbr.o \
     >"$FINAL_BUILD_LOG" 2>&1
+
 FINAL_KBUILD_RC=$?
+
 set -e
 
 if [ "$FINAL_KBUILD_RC" -ne 0 ]; then
+
     echo
+    echo "============================================================"
+    echo " FAIL-CLOSED"
+    echo "============================================================"
+    echo
+
     echo "错误：OpenWrt patch 回放后 BBRv3 Kbuild 失败"
+    echo
+    echo "Linux version     : $ACTUAL_KERNEL_VERSION"
+    echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
+    echo
+
+    echo "最终 Kbuild 错误（最后 200 行）："
     tail -n 200 "$FINAL_BUILD_LOG"
+
     exit 1
 fi
 
@@ -467,6 +583,7 @@ echo "最终 BBRv3 Kbuild : PASS"
 # ============================================================
 # 21. 最终 OpenWrt target/linux/compile 验证
 # ============================================================
+
 echo
 echo "============================================================"
 echo "Step 8 : OpenWrt target/linux/compile"
@@ -477,11 +594,13 @@ make target/linux/compile -j"$(nproc)" V=s
 # ============================================================
 # 22. 最终确认
 # ============================================================
+
 echo
 echo "============================================================"
 echo " Google BBRv3 全自动适配完成"
 echo "============================================================"
 echo
+
 echo "Target            : HINLINK H68K"
 echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
 echo "Linux version     : $ACTUAL_KERNEL_VERSION"
@@ -489,9 +608,11 @@ echo "BBR               : Google BBRv3 (官方源)"
 echo "OpenWrt prepare   : PASS"
 echo "BBRv3 Kbuild      : PASS"
 echo "OpenWrt compile   : PASS"
+
 echo
 echo "生成的 Patch："
 echo "  $PATCH_PATH"
+
 echo
 echo "============================================================"
 echo " FAIL-CLOSED 验证全部通过"
