@@ -35,4 +35,8 @@ BBRv3 的算法源码直接来自 [Google BBR team](https://github.com/google/bb
 
 ## BBRv3 专用自动适配入口
 
-已接入 scripts/openwrt-bbr3.py，支持检测实际内核、发现上游候选、失败重试、完整 Kbuild 与模块版本核对。刷机后可运行 br3-check。用法和兼容边界见 [BBR3.md](scripts/BBR3.md)。
+已接入 patch/openwrt-bbr3.py，支持检测实际内核、发现上游候选、失败重试、完整 Kbuild 与模块版本核对。刷机后可运行 br3-check。用法和兼容边界见 [BBR3.md](patch/BBR3.md)。
+
+## 目录说明
+
+`config/` 保存固件配置，`patch/` 按功能与阶段统一保存补丁，`tests/` 保存回归测试。详细分类见 [补丁目录](patch/README.md)。云编译步骤和变量均附中文注释。
