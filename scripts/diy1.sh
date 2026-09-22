@@ -1,158 +1,64 @@
-#!/bin/bash
-#
-# nss
-# 第三方插件源码
-#
-
-echo "DIY1 - 下载第三方插件"
-
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
 mkdir -p package/myapp
-cd package/myapp
-
-# OpenClash
-git clone -b master --depth 1 \
-https://github.com/vernesong/OpenClash.git \
-openclash
-
-# HomeProxy
-git clone -b master --depth 1 \
-https://github.com/immortalwrt/homeproxy.git \
-homeproxy
-
-# SmartDNS
-git clone -b master --depth 1 \
-https://github.com/pymumu/luci-app-smartdns.git \
-luci-app-smartdns
-
-git clone -b master --depth 1 \
-https://github.com/pymumu/smartdns.git \
-smartdns
-
-# MosDNS
-git clone -b v5 --depth 1 \
-https://github.com/sbwml/luci-app-mosdns.git \
-mosdns
-
-# V2Ray GeoData
-git clone --depth 1 \
-https://github.com/sbwml/v2ray-geodata.git \
-v2ray-geodata
-
-# H68K / jjm2473
-git clone -b master --depth 1 \
-https://github.com/jjm2473/luci-app-oled.git \
-luci-app-oled
-
-git clone -b main --depth 1 \
-https://github.com/jjm2473/lcdsimple.git \
-lcdsimple
-
-git clone -b dev --depth 1 \
-https://github.com/jjm2473/luci-app-diskman.git \
-luci-app-diskman
-
-git clone -b dev7 --depth 1 \
-https://github.com/jjm2473/OpenAppFilter.git \
-OpenAppFilter
-
-# NATMap 后端
-git clone -b master --depth 1 \
-https://github.com/muink/openwrt-natmapt.git \
-natmapt
-
-# STUNTMAN 客户端
-git clone -b master --depth 1 \
-https://github.com/muink/openwrt-stuntman.git \
-stuntman
-
-# NATMap LuCI
-git clone -b master --depth 1 \
-https://github.com/muink/luci-app-natmapt.git \
-luci-app-natmapt
-
-# Lucky
-#git clone -b main --depth 1 \
-#https://github.com/gdy666/luci-app-lucky.git \
-#lucky
-
-# TimeControl
-#git clone -b main --depth 1 \
-#https://github.com/sirpdboy/luci-app-timecontrol.git \
-#timecontrol
-
-# Nikki
-#git clone -b main --depth 1 \
-#https://github.com/nikkinikki-org/OpenWrt-nikki.git \
-#nikki
-
-# Momo
-#git clone -b main --depth 1 \
-#https://github.com/nikkinikki-org/OpenWrt-momo.git \
-#momo
-
-# Daed
-#git clone -b master --depth 1 \
-#https://github.com/QiuSimons/luci-app-daed.git \
-#daed
-
-# Aurora
-#git clone -b master --depth 1 \
-#https://github.com/eamonxg/luci-theme-aurora.git \
-#aurora
-
-# HelloWorld
-#git clone -b master --depth 1 \
-#https://github.com/fw876/helloworld.git \
-#helloworld
-
-# PassWall Packages
-#git clone -b main --depth 1 \
-#https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git \
-#passwall-packages
-
-# PassWall
-#git clone -b main --depth 1 \
-#https://github.com/Openwrt-Passwall/openwrt-passwall.git \
-#passwall
-
-# PassWall2
-#git clone -b main --depth 1 \
-#https://github.com/Openwrt-Passwall/openwrt-passwall2.git \
-#passwall2
-
-cd ../..
-
-echo "添加插件集合源"
-
-# iStore Packages
-#echo 'src-git istore https://github.com/linkease/istore-packages.git;main' >> feeds.conf.default
-
-# NAS Packages
-echo 'src-git nas https://github.com/linkease/nas-packages.git;master' >> feeds.conf.default
-echo 'src-git nas_luci https://github.com/linkease/nas-packages-luci.git;main' >> feeds.conf.default
-
-# jjm2473 Apps
-echo 'src-git jjm2473_apps https://github.com/jjm2473/openwrt-apps.git;main' >> feeds.conf.default
-
-# Kenzok8
-echo 'src-git kenzo https://github.com/kenzok8/openwrt-packages.git' >> feeds.conf.default
-echo 'src-git small https://github.com/kenzok8/small.git' >> feeds.conf.default
-# echo 'src-git small_package https://github.com/kenzok8/small-package.git' >> feeds.conf.default
-
-# Kiddin9
-#echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf.default
-
-# VIKINGYFY
-# echo 'src-git vikingyfy https://github.com/VIKINGYFY/packages.git' >> feeds.conf.default
-
-# Modem
-# echo 'src-git modem https://github.com/FUjr/modem_feeds.git' >> feeds.conf.default
-
-echo "package/myapp:"
-find package/myapp \
--maxdepth 1 \
--mindepth 1 \
--type d \
--printf '%f\n' | sort
-
-echo "DIY1 OK"
+: > build-info/sources.txt
+printf 'openwrt https://github.com/openwrt/openwrt.git %s\n' "$(git rev-parse HEAD)" >> build-info/sources.txt
+install_source() {
+    local name="$1" url="$2" branch="$3" subdir="${4:-.}"
+    source_repo "$name" "$url" "$branch"
+    test -d ".sources/$name/$subdir"
+    # Only expose OpenWrt packages, not the application's upstream build files.
+    ln -sfn "../../.sources/$name/$subdir" "package/myapp/$name"
+}
+if enabled luci-app-openclash; then
+    install_source openclash https://github.com/vernesong/OpenClash.git master luci-app-openclash
+fi
+if enabled luci-app-homeproxy; then
+    install_source homeproxy https://github.com/immortalwrt/homeproxy.git master
+fi
+if enabled luci-app-smartdns; then
+    install_source luci-app-smartdns https://github.com/pymumu/luci-app-smartdns.git master
+    install_source smartdns https://github.com/pymumu/openwrt-smartdns.git master
+fi
+if enabled luci-app-mosdns; then
+    install_source mosdns https://github.com/sbwml/luci-app-mosdns.git v5
+fi
+if enabled luci-app-passwall; then
+    install_source passwall-packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git main
+    install_source passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git main
+fi
+if enabled luci-app-daed; then
+    install_source daed https://github.com/QiuSimons/luci-app-daed.git master
+fi
+if enabled luci-app-oled; then
+    install_source oled https://github.com/jjm2473/luci-app-oled.git master
+    install_source lcdsimple https://github.com/jjm2473/lcdsimple.git main
+fi
+if enabled luci-app-diskman; then
+    install_source diskman https://github.com/jjm2473/luci-app-diskman.git dev
+fi
+if enabled luci-app-oaf; then
+    install_source openappfilter https://github.com/jjm2473/OpenAppFilter.git dev7
+fi
+if enabled luci-app-natmapt; then
+    install_source natmapt https://github.com/muink/openwrt-natmapt.git master
+    install_source stuntman https://github.com/muink/openwrt-stuntman.git master
+    install_source luci-app-natmapt https://github.com/muink/luci-app-natmapt.git master
+fi
+# Native package/ takes priority. Feed ordering resolves remaining duplicates.
+cat > feeds.conf <<'EOF'
+src-git nas https://github.com/linkease/nas-packages.git;master
+src-git nas_luci https://github.com/linkease/nas-packages-luci.git;main
+src-git jjm2473_apps https://github.com/jjm2473/openwrt-apps.git;main
+src-git kenzo https://github.com/kenzok8/openwrt-packages.git
+src-git small https://github.com/kenzok8/small.git
+EOF
+cat feeds.conf.default >> feeds.conf
+./scripts/feeds update -a
+# OpenWrt's parser handles LuCI-generated package definitions and native priority.
+./scripts/feeds install -a
+for feed in feeds/*; do
+    [[ -d "$feed/.git" ]] || continue
+    printf 'feed/%s %s %s\n' "${feed##*/}" "$(git -C "$feed" remote get-url origin)" "$(git -C "$feed" rev-parse HEAD)" >> build-info/sources.txt
+done
