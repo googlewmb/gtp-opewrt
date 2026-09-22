@@ -14,3 +14,16 @@ jobs:
           for file in scripts/*.sh patch/*.sh; do bash -n "$file"; done
           python3 -m compileall -q scripts
           python3 -m unittest discover -s scripts -p 'test_*.py'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Verify DAED frozen lock against pinned source
+        run: |
+          python3 -m pip install PyYAML
+          npm install -g pnpm@10.24.0
+          git init /tmp/daed-lock-check
+          git -C /tmp/daed-lock-check fetch --depth=1 https://github.com/daeuniverse/daed.git f045ecdd76cecce4e887a123dd45a9c25260f773
+          git -C /tmp/daed-lock-check checkout FETCH_HEAD
+          python3 scripts/daed-lock.py /tmp/daed-lock-check
+          cd /tmp/daed-lock-check
+          pnpm install --frozen-lockfile --lockfile-only --ignore-scripts --offline
