@@ -206,6 +206,8 @@ def artifacts():
     root = Path("bin/targets/rockchip/armv8")
     images = [p for p in root.glob("*hinlink_h68k*") if p.name.endswith((".img.gz", ".img", ".bin", ".itb"))]
     require(images, "No H68K firmware image")
+    subprocess.run([sys.executable, str(PROJECT / 'scripts/openwrt-bbr3.py'),
+                    '--verify-only'], check=True)
     manifests = list(root.glob("*.manifest"))
     require(manifests, "No firmware manifest")
     require((root / "sha256sums").is_file(), "No sha256sums")
