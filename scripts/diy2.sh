@@ -16,6 +16,23 @@ echo "DIY2 - H68K + iStoreOS 24.10"
 echo "第三方插件 / 依赖 / 来源优先"
 
 
+
+
+
+
+# ============================================================
+# SONiC Full Cone NAT
+# ============================================================
+
+echo "应用 SONiC Full Cone NAT"
+
+SONIC_URL="https://raw.githubusercontent.com/mufeng05/openwrt-sonic-fullcone/master/add_sonic_fullcone.sh"
+
+curl -fsSL "$SONIC_URL" | bash
+
+
+
+
 ###############################################################################
 # 0. 基础目录
 ###############################################################################
