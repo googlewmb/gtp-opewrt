@@ -1,191 +1,158 @@
 #!/bin/bash
 #
-# DIY1 - OpenWrt Mainline 第三方插件
+# nss
+# 第三方插件源码
 #
-# 严格来源优先级：
-# ① 直接指定第三方插件源码
-# ② 第三方插件源码集合 / Feeds
-# ③ OpenWrt 官方插件
-#
-set -e
 
-echo "========== DIY1 =========="
-
-[ -x ./scripts/feeds ] || {
-    echo "错误：当前不是 OpenWrt 源码根目录"
-    exit 1
-}
+echo "DIY1 - 下载第三方插件"
 
 mkdir -p package/myapp
+cd package/myapp
 
-# ==========================================================
-# ① 第三方 Feeds
-# ==========================================================
-add_feed() {
-    grep -Fqx "src-git $1 $2" feeds.conf.default 2>/dev/null || \
-        echo "src-git $1 $2" >> feeds.conf.default
-}
+# OpenClash
+git clone -b master --depth 1 \
+https://github.com/vernesong/OpenClash.git \
+openclash
 
-add_feed nas "https://github.com/linkease/nas-packages.git;master"
-add_feed nas_luci "https://github.com/linkease/nas-packages-luci.git;main"
-add_feed jjm2473_apps "https://github.com/jjm2473/openwrt-apps.git;main"
-add_feed kenzo "https://github.com/kenzok8/openwrt-packages.git"
-add_feed small "https://github.com/kenzok8/small.git"
+# HomeProxy
+git clone -b master --depth 1 \
+https://github.com/immortalwrt/homeproxy.git \
+homeproxy
 
-./scripts/feeds update -a
+# SmartDNS
+git clone -b master --depth 1 \
+https://github.com/pymumu/luci-app-smartdns.git \
+luci-app-smartdns
 
-# ==========================================================
-# 第三方 Golang 27.x
-# 已禁用，使用 OpenWrt Mainline 官方 packages/lang/golang
-# ==========================================================
-# rm -rf feeds/packages/lang/golang
-# git clone -b 27.x --depth 1 \
-#     https://github.com/sbwml/packages_lang_golang \
-#     feeds/packages/lang/golang
-#
-# [ -f feeds/packages/lang/golang/Makefile ]
+git clone -b master --depth 1 \
+https://github.com/pymumu/smartdns.git \
+smartdns
 
-# ==========================================================
-# 删除官方冲突插件
-# 保留官方其他正常依赖
-# ==========================================================
-rm_pkg() {
-    [ -e "$1" ] && rm -rf "$1"
-}
+# MosDNS
+git clone -b v5 --depth 1 \
+https://github.com/sbwml/luci-app-mosdns.git \
+mosdns
 
-for p in \
-    xray-core v2ray-geodata sing-box chinadns-ng dns2socks \
-    ipt2socks microsocks naiveproxy shadowsocks-rust shadowsocksr-libev \
-    simple-obfs tcping v2ray-plugin xray-plugin geoview shadow-tls
-do
-    rm_pkg "feeds/packages/net/$p"
-done
-
-for p in \
-    luci-app-passwall luci-app-passwall2 luci-app-openclash \
-    luci-app-homeproxy luci-app-lucky luci-app-smartdns \
-    luci-app-timecontrol luci-app-mosdns luci-app-nikki \
-    luci-app-momo luci-app-daed
-do
-    rm_pkg "feeds/luci/applications/$p"
-done
-
-# ==========================================================
-# ② 安装第三方 Feeds
-# ==========================================================
-./scripts/feeds install -a
-
-# ==========================================================
-# ③ 直接指定第三方插件
-# ==========================================================
-clone_pkg() {
-    local url="$1"
-    local branch="$2"
-    local dest="$3"
-
-    rm -rf "$dest"
-
-    if [ -n "$branch" ]; then
-        git clone -b "$branch" --depth 1 "$url" "$dest"
-    else
-        git clone --depth 1 "$url" "$dest"
-    fi
-}
-
-# ---------- 科学上网 / DNS ----------
-clone_pkg \
-    "https://github.com/vernesong/OpenClash.git" \
-    "master" \
-    "package/myapp/openclash"
-
-# clone_pkg \
-#     "https://github.com/immortalwrt/homeproxy.git" \
-#     "master" \
-#     "package/myapp/homeproxy"
-
-clone_pkg \
-    "https://github.com/pymumu/luci-app-smartdns.git" \
-    "master" \
-    "package/myapp/luci-app-smartdns"
-
-clone_pkg \
-    "https://github.com/pymumu/smartdns.git" \
-    "master" \
-    "package/myapp/smartdns"
-
-clone_pkg \
-    "https://github.com/sbwml/luci-app-mosdns.git" \
-    "v5" \
-    "package/myapp/mosdns"
-
-clone_pkg \
-    "https://github.com/sbwml/v2ray-geodata.git" \
-    "" \
-    "package/myapp/v2ray-geodata"
-
-# ---------- H68K / 硬件 ----------
-clone_pkg \
-    "https://github.com/jjm2473/luci-app-oled.git" \
-    "master" \
-    "package/myapp/luci-app-oled"
-
-clone_pkg \
-    "https://github.com/jjm2473/lcdsimple.git" \
-    "main" \
-    "package/myapp/lcdsimple"
-
-clone_pkg \
-    "https://github.com/jjm2473/luci-app-diskman.git" \
-    "dev" \
-    "package/myapp/luci-app-diskman"
-
-clone_pkg \
-    "https://github.com/jjm2473/OpenAppFilter.git" \
-    "dev7" \
-    "package/myapp/OpenAppFilter"
-
-# ---------- NAT / 穿透 ----------
-clone_pkg \
-    "https://github.com/muink/openwrt-natmapt.git" \
-    "master" \
-    "package/myapp/natmapt"
-
-clone_pkg \
-    "https://github.com/muink/openwrt-stuntman.git" \
-    "master" \
-    "package/myapp/stuntman"
-
-clone_pkg \
-    "https://github.com/muink/luci-app-natmapt.git" \
-    "master" \
-    "package/myapp/luci-app-natmapt"
-
-# ---------- Liquid ----------
-clone_pkg \
-    "https://github.com/zzsj0928/luci-theme-liquid.git" \
-    "main" \
-    "package/luci-theme-liquid"
-
-# ==========================================================
-# PassWall：独立第三方源码
-# ==========================================================
-rm -rf package/passwall-packages package/passwall-luci
-
+# V2Ray GeoData
 git clone --depth 1 \
-    https://github.com/Openwrt-Passwall/openwrt-passwall-packages \
-    package/passwall-packages
+https://github.com/sbwml/v2ray-geodata.git \
+v2ray-geodata
 
-git clone --depth 1 \
-    https://github.com/Openwrt-Passwall/openwrt-passwall \
-    package/passwall-luci
+# H68K / jjm2473
+git clone -b master --depth 1 \
+https://github.com/jjm2473/luci-app-oled.git \
+luci-app-oled
 
-# ==========================================================
-# 完成
-# ==========================================================
-echo
-echo "========== DIY1 OK =========="
-echo "第三方直接插件：package/myapp"
-echo "PassWall：package/passwall-*"
-echo "Liquid：package/luci-theme-liquid"
-echo "第三方 Feeds：feeds/*"
-echo "官方 Feeds：保留未冲突插件"
+git clone -b main --depth 1 \
+https://github.com/jjm2473/lcdsimple.git \
+lcdsimple
+
+git clone -b dev --depth 1 \
+https://github.com/jjm2473/luci-app-diskman.git \
+luci-app-diskman
+
+git clone -b dev7 --depth 1 \
+https://github.com/jjm2473/OpenAppFilter.git \
+OpenAppFilter
+
+# NATMap 后端
+git clone -b master --depth 1 \
+https://github.com/muink/openwrt-natmapt.git \
+natmapt
+
+# STUNTMAN 客户端
+git clone -b master --depth 1 \
+https://github.com/muink/openwrt-stuntman.git \
+stuntman
+
+# NATMap LuCI
+git clone -b master --depth 1 \
+https://github.com/muink/luci-app-natmapt.git \
+luci-app-natmapt
+
+# Lucky
+#git clone -b main --depth 1 \
+#https://github.com/gdy666/luci-app-lucky.git \
+#lucky
+
+# TimeControl
+#git clone -b main --depth 1 \
+#https://github.com/sirpdboy/luci-app-timecontrol.git \
+#timecontrol
+
+# Nikki
+#git clone -b main --depth 1 \
+#https://github.com/nikkinikki-org/OpenWrt-nikki.git \
+#nikki
+
+# Momo
+#git clone -b main --depth 1 \
+#https://github.com/nikkinikki-org/OpenWrt-momo.git \
+#momo
+
+# Daed
+#git clone -b master --depth 1 \
+#https://github.com/QiuSimons/luci-app-daed.git \
+#daed
+
+# Aurora
+#git clone -b master --depth 1 \
+#https://github.com/eamonxg/luci-theme-aurora.git \
+#aurora
+
+# HelloWorld
+#git clone -b master --depth 1 \
+#https://github.com/fw876/helloworld.git \
+#helloworld
+
+# PassWall Packages
+#git clone -b main --depth 1 \
+#https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git \
+#passwall-packages
+
+# PassWall
+#git clone -b main --depth 1 \
+#https://github.com/Openwrt-Passwall/openwrt-passwall.git \
+#passwall
+
+# PassWall2
+#git clone -b main --depth 1 \
+#https://github.com/Openwrt-Passwall/openwrt-passwall2.git \
+#passwall2
+
+cd ../..
+
+echo "添加插件集合源"
+
+# iStore Packages
+#echo 'src-git istore https://github.com/linkease/istore-packages.git;main' >> feeds.conf.default
+
+# NAS Packages
+echo 'src-git nas https://github.com/linkease/nas-packages.git;master' >> feeds.conf.default
+echo 'src-git nas_luci https://github.com/linkease/nas-packages-luci.git;main' >> feeds.conf.default
+
+# jjm2473 Apps
+echo 'src-git jjm2473_apps https://github.com/jjm2473/openwrt-apps.git;main' >> feeds.conf.default
+
+# Kenzok8
+echo 'src-git kenzo https://github.com/kenzok8/openwrt-packages.git' >> feeds.conf.default
+echo 'src-git small https://github.com/kenzok8/small.git' >> feeds.conf.default
+# echo 'src-git small_package https://github.com/kenzok8/small-package.git' >> feeds.conf.default
+
+# Kiddin9
+#echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf.default
+
+# VIKINGYFY
+# echo 'src-git vikingyfy https://github.com/VIKINGYFY/packages.git' >> feeds.conf.default
+
+# Modem
+# echo 'src-git modem https://github.com/FUjr/modem_feeds.git' >> feeds.conf.default
+
+echo "package/myapp:"
+find package/myapp \
+-maxdepth 1 \
+-mindepth 1 \
+-type d \
+-printf '%f\n' | sort
+
+echo "DIY1 OK"
