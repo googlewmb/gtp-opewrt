@@ -36,13 +36,14 @@ add_feed small "https://github.com/kenzok8/small.git"
 
 # ==========================================================
 # 第三方 Golang 27.x
+# 已禁用，使用 OpenWrt Mainline 官方 packages/lang/golang
 # ==========================================================
-rm -rf feeds/packages/lang/golang
-git clone -b 27.x --depth 1 \
-    https://github.com/sbwml/packages_lang_golang \
-    feeds/packages/lang/golang
-
-[ -f feeds/packages/lang/golang/Makefile ]
+# rm -rf feeds/packages/lang/golang
+# git clone -b 27.x --depth 1 \
+#     https://github.com/sbwml/packages_lang_golang \
+#     feeds/packages/lang/golang
+#
+# [ -f feeds/packages/lang/golang/Makefile ]
 
 # ==========================================================
 # 删除官方冲突插件
@@ -53,7 +54,7 @@ rm_pkg() {
 }
 
 for p in \
-    xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria \
+    xray-core v2ray-geodata sing-box chinadns-ng dns2socks \
     ipt2socks microsocks naiveproxy shadowsocks-rust shadowsocksr-libev \
     simple-obfs tcping v2ray-plugin xray-plugin geoview shadow-tls
 do
