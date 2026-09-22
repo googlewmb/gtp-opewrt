@@ -65,6 +65,23 @@ class PreparationTests(unittest.TestCase):
         self.assertIn('@@ -1,1 +1,2 @@\n \n+a', fixed)
         self.assertIn('--- a/two\n+++ b/two\n@@ -1,1 +1,2 @@', fixed)
 
+    def test_patch_new_file_is_not_swallowed_by_previous_hunk(self):
+        patch = ('--- a/Makefile.am\n+++ b/Makefile.am\n@@ -1,1 +1,2 @@\n old\n+new\n'
+                 '--- /dev/null\n+++ b/fullcone.c\n@@ -0,0 +1,1 @@\n+source\n')
+        fixed = prepare.normalize_patch(patch)
+        self.assertIn('@@ -1,1 +1,2 @@\n old\n+new\n--- /dev/null', fixed)
+        self.assertIn('+++ b/fullcone.c\n@@ -0,0 +1,1 @@\n+source', fixed)
+
+    def test_smartdns_dashboard_download_is_conditional(self):
+        prepare.write('tools/ninja/Makefile', 'PKG_VERSION:=1.13.2\n')
+        path = Path('.sources/smartdns/Makefile')
+        prepare.write(path, '$(eval $(call Download,smartdns-webui))\n')
+        prepare.customize()
+        first = path.read_text()
+        self.assertIn('ifdef CONFIG_PACKAGE_smartdns-ui\n$(eval $(call Download,smartdns-webui))\nendif', first)
+        prepare.customize()
+        self.assertEqual(first, path.read_text())
+
 
 if __name__ == '__main__':
     unittest.main()
