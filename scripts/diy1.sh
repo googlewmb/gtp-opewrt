@@ -98,10 +98,10 @@ clone_pkg \
     "master" \
     "package/myapp/openclash"
 
-clone_pkg \
-    "https://github.com/immortalwrt/homeproxy.git" \
-    "master" \
-    "package/myapp/homeproxy"
+# clone_pkg \
+#     "https://github.com/immortalwrt/homeproxy.git" \
+#     "master" \
+#     "package/myapp/homeproxy"
 
 clone_pkg \
     "https://github.com/pymumu/luci-app-smartdns.git" \
