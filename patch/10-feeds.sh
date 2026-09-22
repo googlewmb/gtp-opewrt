@@ -59,6 +59,17 @@ cat feeds.conf.default >> feeds.conf
 ./scripts/feeds update -a
 # 交给 OpenWrt 原生解析器处理 LuCI 包定义与源优先级。
 ./scripts/feeds install -a
+# 日志 #41 中这些未选用的第三方包产生 Kconfig 自引用/循环依赖。
+# 仅移除 feeds 链接；不删除源码，不影响独立的 daed 软件包。
+# 如果以后明确启用其中之一，停止并要求先修复该包，不能静默删功能。
+unsupported=(dae luci-app-daede luci-app-fchomo librespeed-cli-rust librespeed-common luci-app-librespeed squeezelite-custom)
+for package in "${unsupported[@]}"; do
+    if enabled "$package"; then
+        echo "第三方包 $package 存在已知循环依赖，请先修复其 Kconfig" >&2
+        exit 1
+    fi
+done
+./scripts/feeds uninstall "${unsupported[@]}"
 for feed in feeds/*; do
     [[ -d "$feed/.git" ]] || continue
     printf 'feed/%s %s %s\n' "${feed##*/}" "$(git -C "$feed" remote get-url origin)" "$(git -C "$feed" rev-parse HEAD)" >> build-info/sources.txt

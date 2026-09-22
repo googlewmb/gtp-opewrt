@@ -22,6 +22,13 @@ def customize():
                 old = "include ../../lang/rust/rust-package.mk"
                 if old in text:
                     write(path, text.replace(old, "include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk"))
+                # LuCI SmartDNS 不需要独立 dashboard；未选择时不要下载其资源。
+                # 保留原有哈希校验，避免用跳过校验掩盖上游 WebUI 哈希不一致。
+                text = path.read_text()
+                download = '$(eval $(call Download,smartdns-webui))'
+                guarded = 'ifdef CONFIG_PACKAGE_smartdns-ui\n' + download + '\nendif'
+                if download in text and guarded not in text:
+                    write(path, text.replace(download, guarded))
 
 
 if __name__ == '__main__':

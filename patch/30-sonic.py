@@ -22,7 +22,8 @@ def normalize_patch(text):
             continue
         i += 1
         body = []
-        while i < len(lines) and not lines[i].startswith(('@@ ', '--- a/', 'diff --git ', '-- \n')):
+        # 新建文件以 /dev/null 为旧路径，必须结束前一文件的补丁块。
+        while i < len(lines) and not lines[i].startswith(('@@ ', '--- a/', '--- /dev/null', 'diff --git ', '-- \n')):
             line = lines[i]
             if line == '\n':
                 line = ' \n'
