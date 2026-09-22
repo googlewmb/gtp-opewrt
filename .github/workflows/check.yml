@@ -1,0 +1,16 @@
+name: Validate build scripts
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check syntax and failure guards
+        run: |
+          for file in scripts/*.sh patch/*.sh; do bash -n "$file"; done
+          python3 -m compileall -q scripts
+          python3 -m unittest discover -s scripts -p 'test_*.py'
