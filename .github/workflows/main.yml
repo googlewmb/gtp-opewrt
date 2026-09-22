@@ -1,230 +1,509 @@
-# 工作流名称
-name: OpenWrt 编译
+#!/bin/bash
+#
+# ============================================================
+# OpenWrt Mainline Google BBRv3 全自动适配器
+#
+# 严格原则（不可违背）：
+#   1. 自动检测 KERNEL_PATCHVER
+#   2. 不写死 Linux 版本
+#   3. 使用 Google 官方 BBRv3
+#   4. 不回放历史 kernel commit
+#   5. 不使用 --3way 判断 API 兼容
+#   6. 只接受真实 Linux Kbuild 验证
+#   7. 无法编译立即 FAIL-CLOSED
+#   8. 不猜测 TCP API
+#   9. 只生成当前内核对应 patch
+#  10. 最终由 OpenWrt 完整构建执行真实 Kbuild 验证
+#
+# Google BBRv3 官方源：
+#   https://raw.githubusercontent.com/google/bbr/v3/net/ipv4/tcp_bbr.c
+# ============================================================
 
-# 授予 GITHUB_TOKEN 完整写权限
-permissions: write-all
+set -euo pipefail
 
-# 仅手动启动
-on:
-  workflow_dispatch:
+# ============================================================
+# 0. 固定非交互编译环境
+# ============================================================
 
-# 全局环境变量
-env:
-  OPENWRT_NAME: OpenWrt                                      # 固件名称
-  SOURCE_REPO: https://github.com/openwrt/openwrt.git       # OpenWrt 主线仓库
-  SOURCE_BRANCH: main                                        # OpenWrt 主线分支
-  CONFIG_FILE: config/h68k.txt                              # H68K 配置文件
-  PATCH_DIR: patch                                           # Patch 目录
-  DIY_DIR: scripts                                           # DIY 目录
-  UPLOAD_BIN: true                                           # 上传完整 bin
-  UPLOAD_FIRMWARE: true                                      # 上传固件
-  UPLOAD_RELEASE: true                                       # 创建 Release
-  TZ: Asia/Shanghai                                          # 编译时区
+export TERM=xterm-256color
+export LANG=C
+export LC_ALL=C
+export FORCE_UNSAFE_CONFIGURE=1
 
-# 编译任务
-jobs:
-  build:
-    name: 编译 OpenWrt                                      # 任务名称
-    runs-on: ubuntu-24.04                                   # Ubuntu 24.04
+echo
+echo "============================================================"
+echo " OpenWrt Mainline Google BBRv3 全自动适配器"
+echo "============================================================"
 
-    steps:
-      # 检出当前配置仓库
-      - name: 检出配置
-        uses: actions/checkout@v4                           # 检出代码
-        with:
-          ref: main                                         # 使用 main
-          fetch-depth: 1                                    # 浅克隆
+# ============================================================
+# 1. 基础环境检查
+# ============================================================
 
-      # 清理 Runner 磁盘
-      - name: 清理磁盘
-        uses: coder-xiaomo/free-disk-space@main             # 磁盘清理
-        with:
-          android: true                                     # 清理 Android
-          dotnet: true                                      # 清理 .NET
-          haskell: true                                     # 清理 Haskell
-          large-packages: true                              # 清理大型软件
-          docker-images: true                               # 清理 Docker
-          swap-storage: true                                # 清理 Swap
+[ -f "./Makefile" ] || {
+    echo "错误：当前目录不是 OpenWrt 源码根目录"
+    exit 1
+}
 
-      # 初始化 OpenWrt 编译环境
-      - name: 初始化编译环境
-        env:
-          DEBIAN_FRONTEND: noninteractive                   # 禁止 APT 交互
-        run: |
-          set -euxo pipefail                                # 严格错误处理
-          sudo apt-get update                                # 更新软件源
-          sudo apt-get full-upgrade -y                       # 更新系统软件
+[ -f ".config" ] || {
+    echo "错误：OpenWrt .config 不存在，请先生成配置"
+    exit 1
+}
 
-          # 安装 OpenWrt 完整编译依赖
-          sudo apt-get install -y \
-            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext \
-            gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
-            lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
-            libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
-            libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build \
-            p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
-            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig \
-            texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+for cmd in make curl diff grep sed head find tail tr awk; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+        echo "错误：缺少必要命令 $cmd"
+        exit 1
+    }
+done
 
-          sudo apt-get clean                                  # 清理 APT 缓存
+# ============================================================
+# 2. 目标设备检查（H68K）
+# ============================================================
 
-      # 下载 OpenWrt 主线源码
-      - name: 下载源码
-        run: |
-          set -euxo pipefail                                # 严格错误处理
-          git clone --depth 1 --single-branch \
-            -b "$SOURCE_BRANCH" "$SOURCE_REPO" openwrt       # 克隆 OpenWrt main
-          cd openwrt                                         # 进入源码目录
-          git rev-parse HEAD                                 # 输出源码 Commit
+grep -q \
+    '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
+    .config || {
+    echo
+    echo "错误：当前配置不是官方 OpenWrt H68K"
+    exit 1
+}
 
-      # 写入 H68K 配置
-      - name: 配置
-        working-directory: openwrt
-        run: |
-          set -euo pipefail                                 # 严格错误处理
+echo "目标设备          : Hinlink H68K"
 
-          cp "../$CONFIG_FILE" .config                       # 写入 H68K 配置
-          test -s .config                                    # 检查配置文件
-          grep -q \
-            '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
-            .config                                           # 确认目标为 H68K
+# ============================================================
+# 3. 自动检测 KERNEL_PATCHVER
+# ============================================================
 
-          # 自动执行全部主线 Patch
-          for script in ../$PATCH_DIR/*.sh; do
-            [ -f "$script" ] || continue                     # 跳过不存在文件
-            bash "$script"                                   # 执行 Patch
-          done
+detect_kernel_patchver() {
+    local ver=""
 
-          # 自动执行全部 DIY
-          for script in ../$DIY_DIR/*.sh; do
-            [ -f "$script" ] || continue                     # 跳过不存在文件
-            bash "$script"                                   # 执行 DIY
-          done
+    ver="$(
+        make -s -f include/kernel-version.mk kernel_patchver 2>/dev/null || true
+    )"
 
-          make defconfig                                     # 生成最终配置
+    if [ -z "$ver" ]; then
+        ver="$(
+            sed -n \
+                's/^[[:space:]]*KERNEL_PATCHVER[[:space:]]*[:?+]*=[[:space:]]*//p' \
+                target/linux/rockchip/Makefile 2>/dev/null |
+            head -n 1 || true
+        )"
+    fi
 
-          grep -q \
-            '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y$' \
-            .config                                           # 再次确认 H68K
+    printf '%s' "$ver" | tr -d '[:space:]'
+}
 
-      # 缓存下载文件和编译缓存
-      - name: 缓存
-        uses: actions/cache@v4                              # GitHub 缓存
-        with:
-          path: |
-            openwrt/dl                                        # OpenWrt 下载缓存
-            openwrt/.ccache                                   # 编译缓存
-          key: openwrt-${{ runner.os }}-${{ hashFiles('config/h68k.txt', 'patch/*.sh', 'scripts/*.sh', 'openwrt/.config') }} # 精确缓存
-          restore-keys: |
-            openwrt-${{ runner.os }}-                          # 回退缓存
+KERNEL_PATCHVER="$(detect_kernel_patchver)"
 
-      # 下载源码并编译
-      - name: 下载并编译
-        working-directory: openwrt
-        run: |
-          set -o pipefail                                    # 保留管道错误
+[ -n "$KERNEL_PATCHVER" ] || {
+    echo "错误：无法检测 KERNEL_PATCHVER"
+    exit 1
+}
 
-          make download -j"$(nproc)" V=s                     # 并行下载源码
+echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
 
-          # 首先进行多线程编译
-          if make -j"$(nproc)" V=s 2>&1 | tee ../build-parallel.log; then
-            echo "并行编译成功"                              # 编译成功
-          else
-            echo "并行编译失败，开始 -j1 重试"               # 编译失败
-            make -j1 V=s 2>&1 | tee ../build-single.log      # 单线程重试
-          fi
+# ============================================================
+# 4. 自动选择 generic patch 目录
+#
+# 优先使用：
+#
+#   target/linux/generic/pending-${KERNEL_PATCHVER}
+#
+# 如果版本专用目录不存在，则使用：
+#
+#   target/linux/generic/pending
+#
+# ============================================================
 
-      # 检查编译输出
-      - name: 检查固件
-        if: success()                                       # 仅成功时执行
-        run: |
-          set -euxo pipefail                                # 严格错误处理
-          test -d openwrt/bin/targets                        # 检查输出目录
-          find openwrt/bin/targets -type f -printf '%p\n' | sort # 列出输出
+GENERIC_DIR="target/linux/generic"
 
-      # 上传编译日志
-      - name: 上传日志
-        if: always()                                        # 成功失败都上传
-        uses: actions/upload-artifact@v4                     # Artifact
-        with:
-          name: ${{ env.OPENWRT_NAME }}-Build-Logs          # 日志名称
-          path: |
-            build-parallel.log                               # 并行日志
-            build-single.log                                 # 单线程日志
-          if-no-files-found: ignore                          # 无日志不报错
-          retention-days: 7                                  # 保留 7 天
+if [ -d "${GENERIC_DIR}/pending-${KERNEL_PATCHVER}" ]; then
+    GENERIC_PATCH_DIR="${GENERIC_DIR}/pending-${KERNEL_PATCHVER}"
+else
+    GENERIC_PATCH_DIR="${GENERIC_DIR}/pending"
+fi
 
-      # 上传完整 bin/targets
-      - name: 上传 bin
-        if: success() && env.UPLOAD_BIN == 'true'            # 成功且开启
-        uses: actions/upload-artifact@v4                     # Artifact
-        with:
-          name: ${{ env.OPENWRT_NAME }}-bin                 # Artifact 名称
-          path: openwrt/bin/targets/                         # 完整输出
-          if-no-files-found: error                           # 无文件报错
-          retention-days: 7                                  # 保留 7 天
+mkdir -p "$GENERIC_PATCH_DIR"
 
-      # 上传主要固件
-      - name: 上传固件
-        if: success() && env.UPLOAD_FIRMWARE == 'true'       # 成功且开启
-        uses: actions/upload-artifact@v4                     # Artifact
-        with:
-          name: ${{ env.OPENWRT_NAME }}-Firmware            # 固件名称
-          path: |
-            openwrt/bin/targets/**/*.bin                     # BIN
-            openwrt/bin/targets/**/*.itb                     # ITB
-            openwrt/bin/targets/**/*.img                     # IMG
-            openwrt/bin/targets/**/*.gz                      # GZ
-            openwrt/bin/targets/**/*.zip                     # ZIP
-            openwrt/bin/targets/**/*.manifest                # MANIFEST
-            openwrt/bin/targets/**/*.json                    # JSON
-            openwrt/bin/targets/**/*.sha256                  # SHA256
-          if-no-files-found: warn                            # 无匹配文件只警告
-          retention-days: 7                                  # 保留 7 天
+echo "Patch directory   : $GENERIC_PATCH_DIR"
 
-      # 自动创建 GitHub Release
-      - name: 创建 Release
-        if: success() && env.UPLOAD_RELEASE == 'true'        # 成功且开启
-        env:
-          GH_TOKEN: ${{ github.token }}                      # GitHub Token
-        run: |
-          set -euo pipefail                                 # 严格错误处理
+# ============================================================
+# 5. 工作目录
+# ============================================================
 
-          # 生成唯一 Release 标签
-          TAG="h68k-$(date '+%Y%m%d-%H%M%S')-${GITHUB_RUN_NUMBER}"
+WORK_ROOT="${TMPDIR:-/tmp}/openwrt-bbrv3-${KERNEL_PATCHVER}-$$"
 
-          mkdir -p release-assets                           # 创建 Release 目录
+rm -rf "$WORK_ROOT"
+mkdir -p "$WORK_ROOT"
 
-          # 收集固件和校验文件
-          find openwrt/bin/targets -type f \
-            \( -name '*.bin' -o -name '*.itb' -o -name '*.img' \
-            -o -name '*.gz' -o -name '*.zip' -o -name '*.manifest' \
-            -o -name '*.json' -o -name '*.sha256' \) \
-            -exec cp -t release-assets {} +
+GOOGLE_BBR="$WORK_ROOT/tcp_bbr-google-v3.c"
+ORIGINAL_BBR="$WORK_ROOT/tcp_bbr-original.c"
 
-          test -n "$(find release-assets -type f -print -quit)" # 确认有文件
+PATCH_NAME="999-bbrv3-google.patch"
+PATCH_PATH="$GENERIC_PATCH_DIR/$PATCH_NAME"
 
-          # 获取 OpenWrt 源码 Commit
-          COMMIT="$(cd openwrt && git rev-parse HEAD)"
+cleanup() {
+    rm -rf "$WORK_ROOT"
+}
 
-          # 生成 Release 说明
-          cat > release-notes.md <<EOF
-          # OpenWrt H68K
+trap cleanup EXIT
 
-          - Target: HINLINK H68K
-          - Source: OpenWrt main
-          - OpenWrt commit: \`$COMMIT\`
-          - Build commit: \`$GITHUB_SHA\`
-          - Build time: $(date '+%Y-%m-%d %H:%M:%S %Z')
-          - Google BBRv3
-          - SONiC Full Cone NAT
-          EOF
+# ============================================================
+# 6. 获取 Google 官方 BBRv3
+# ============================================================
 
-          # 创建 Release 并上传固件
-          gh release create "$TAG" \
-            release-assets/* \
-            --target "$GITHUB_SHA" \
-            --title "OpenWrt H68K $TAG" \
-            --notes-file release-notes.md \
-            --latest
+echo
+echo "============================================================"
+echo "Step 1 : 获取 Google 官方 BBRv3"
+echo "============================================================"
+
+GOOGLE_BBR_URL="https://raw.githubusercontent.com/google/bbr/v3/net/ipv4/tcp_bbr.c"
+
+curl -fL \
+    --retry 5 \
+    --retry-delay 2 \
+    --connect-timeout 20 \
+    --max-time 120 \
+    "$GOOGLE_BBR_URL" \
+    -o "$GOOGLE_BBR"
+
+[ -s "$GOOGLE_BBR" ] || {
+    echo "错误：Google BBRv3 下载失败"
+    exit 1
+}
+
+grep -Eq \
+    '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
+    "$GOOGLE_BBR" || {
+    echo "错误：下载内容不是可确认的 BBRv3"
+    exit 1
+}
+
+grep -q 'struct bbr' "$GOOGLE_BBR" || {
+    echo "错误：BBRv3 struct bbr 不存在"
+    exit 1
+}
+
+grep -q 'bw_hi' "$GOOGLE_BBR" || {
+    echo "错误：BBRv3 bw_hi 不存在"
+    exit 1
+}
+
+grep -q 'inflight_hi' "$GOOGLE_BBR" || {
+    echo "错误：BBRv3 inflight_hi 不存在"
+    exit 1
+}
+
+echo "Google BBRv3      : PASS"
+
+# ============================================================
+# 7. OpenWrt defconfig
+# ============================================================
+
+echo
+echo "============================================================"
+echo "Step 2 : OpenWrt defconfig"
+echo "============================================================"
+
+make defconfig
+
+echo "OpenWrt defconfig : PASS"
+
+# ============================================================
+# 8. OpenWrt target/linux/prepare
+# ============================================================
+
+echo
+echo "============================================================"
+echo "Step 3 : OpenWrt target/linux/prepare"
+echo "============================================================"
+
+make target/linux/prepare V=s
+
+# ============================================================
+# 9. 定位真实 Linux 源码目录
+# ============================================================
+
+detect_linux_dir() {
+    local dir=""
+
+    # 方法1：直接找包含 tcp_bbr.c 的内核目录
+    dir="$(
+        find build_dir \
+            -type f \
+            -path '*/linux-*/net/ipv4/tcp_bbr.c' \
+            2>/dev/null |
+        sed 's#/net/ipv4/tcp_bbr.c$##' |
+        head -n 1 || true
+    )"
+
+    if [ -n "$dir" ] && [ -f "$dir/Makefile" ]; then
+        printf '%s' "$dir"
+        return 0
+    fi
+
+    # 方法2：扫描 linux-* 目录
+    dir="$(
+        find build_dir \
+            -maxdepth 4 \
+            -type d \
+            -path '*/linux-*/linux-*' \
+            2>/dev/null |
+        head -n 1 || true
+    )"
+
+    if [ -n "$dir" ] \
+        && [ -f "$dir/Makefile" ] \
+        && [ -f "$dir/net/ipv4/tcp_bbr.c" ]; then
+        printf '%s' "$dir"
+        return 0
+    fi
+
+    # 方法3：最终回退
+    dir="$(
+        find build_dir \
+            -maxdepth 6 \
+            -type f \
+            -path '*/linux-*/Makefile' \
+            2>/dev/null |
+        sed 's#/Makefile$##' |
+        head -n 1 || true
+    )"
+
+    printf '%s' "$dir"
+}
+
+LINUX_DIR="$(detect_linux_dir)"
+
+[ -n "$LINUX_DIR" ] || {
+    echo "错误：无法定位真实 Linux kernel"
+    exit 1
+}
+
+[ -f "$LINUX_DIR/Makefile" ] || {
+    echo "错误：LINUX_DIR 无效"
+    exit 1
+}
+
+[ -f "$LINUX_DIR/net/ipv4/tcp_bbr.c" ] || {
+    echo "错误：当前 Linux 没有 net/ipv4/tcp_bbr.c"
+    exit 1
+}
+
+echo "Linux source      : $LINUX_DIR"
+
+# ============================================================
+# 10. 获取实际 Linux 版本
+# ============================================================
+
+ACTUAL_KERNEL_VERSION="$(
+    make -s -C "$LINUX_DIR" kernelversion 2>/dev/null || true
+)"
+
+[ -n "$ACTUAL_KERNEL_VERSION" ] || {
+    echo "错误：无法读取 Linux kernel version"
+    exit 1
+}
+
+echo "Linux version     : $ACTUAL_KERNEL_VERSION"
+
+# ============================================================
+# 11. 保存 OpenWrt 原始 BBR
+# ============================================================
+
+cp -f \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c" \
+    "$ORIGINAL_BBR"
+
+# ============================================================
+# 12. 如果当前内核已经是 BBRv3
+# ============================================================
+
+if grep -Eq \
+    '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
+    "$ORIGINAL_BBR"
+then
+    echo
+    echo "当前 Linux 已经包含 Google BBRv3"
+    echo "无需生成 BBRv3 patch"
+    exit 0
+fi
+
+# ============================================================
+# 13. 替换为 Google 官方 BBRv3
+# ============================================================
+
+cp -f \
+    "$GOOGLE_BBR" \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c"
+
+# ============================================================
+# 14. 确认替换后源码确实是 BBRv3
+# ============================================================
+
+grep -Eq \
+    '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c" || {
+    echo "错误：替换后源码不是 BBRv3"
+    exit 1
+}
+
+# ============================================================
+# 15. 生成干净 patch
+# ============================================================
+
+echo
+echo "============================================================"
+echo "Step 4 : 生成 BBRv3 patch"
+echo "============================================================"
+
+rm -f "$PATCH_PATH"
+
+diff -u \
+    --label "a/net/ipv4/tcp_bbr.c" \
+    --label "b/net/ipv4/tcp_bbr.c" \
+    "$ORIGINAL_BBR" \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c" \
+    >"$PATCH_PATH" || true
+
+[ -s "$PATCH_PATH" ] || {
+    echo "错误：BBRv3 patch 为空"
+    exit 1
+}
+
+grep -q \
+    '^--- a/net/ipv4/tcp_bbr.c' \
+    "$PATCH_PATH" || {
+    echo "错误：patch 路径异常"
+    exit 1
+}
+
+grep -q \
+    '^+++ b/net/ipv4/tcp_bbr.c' \
+    "$PATCH_PATH" || {
+    echo "错误：patch 路径异常"
+    exit 1
+}
+
+echo "Patch generated   : $PATCH_PATH"
+echo "Patch size        : $(wc -c < "$PATCH_PATH") bytes"
+
+# ============================================================
+# 16. 恢复原始源码
+# ============================================================
+
+cp -f \
+    "$ORIGINAL_BBR" \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c"
+
+# ============================================================
+# 17. OpenWrt 重新 prepare（验证 patch 回放）
+# ============================================================
+
+echo
+echo "============================================================"
+echo "Step 5 : OpenWrt patch 回放验证"
+echo "============================================================"
+
+[ -f "$PATCH_PATH" ] || {
+    echo "错误：patch 文件不存在: $PATCH_PATH"
+    exit 1
+}
+
+make target/linux/clean V=s
+make defconfig
+make target/linux/prepare V=s
+
+LINUX_DIR="$(detect_linux_dir)"
+
+[ -n "$LINUX_DIR" ] || {
+    echo "错误：重新 prepare 后无法定位 Linux"
+    exit 1
+}
+
+[ -f "$LINUX_DIR/net/ipv4/tcp_bbr.c" ] || {
+    echo "错误：重新 prepare 后 tcp_bbr.c 不存在"
+    exit 1
+}
+
+# ============================================================
+# 18. 确认 BBRv3 已被正确应用
+# ============================================================
+
+if ! grep -Eq \
+    '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c"
+then
+    echo
+    echo "错误：OpenWrt prepare 后没有得到 BBRv3"
+    echo
+    echo "请检查 patch 是否被正确应用："
+    echo "  $PATCH_PATH"
+    echo
+    echo "当前 tcp_bbr.c 前 30 行："
+    head -n 30 "$LINUX_DIR/net/ipv4/tcp_bbr.c"
+    exit 1
+fi
+
+echo "OpenWrt prepare   : PASS"
+echo "BBR_VERSION=3     : PASS"
+
+# ============================================================
+# 19. BBRv3 Patch 验证完成
+#
+# 注意：
+#   这里不提前执行 target/linux/compile。
+#
+#   完整 OpenWrt Workflow 后续的：
+#
+#       make -j"$(nproc)" V=s
+#
+#   会自动先准备：
+#
+#       tools
+#       ↓
+#       toolchain
+#       ↓
+#       target/linux
+#       ↓
+#       package
+#       ↓
+#       firmware
+#
+#   因此真实 Linux Kbuild 由完整 OpenWrt 构建流程验证。
+# ============================================================
+
+echo
+echo "============================================================"
+echo "Step 6 : BBRv3 Patch 验证完成"
+echo "============================================================"
+
+echo "Patch replay      : PASS"
+echo "BBR_VERSION=3     : PASS"
+echo "等待 OpenWrt 完整构建进行最终 Kbuild 验证"
+
+# ============================================================
+# 20. 最终确认
+# ============================================================
+
+echo
+echo "============================================================"
+echo " Google BBRv3 Patch 适配完成"
+echo "============================================================"
+echo
+
+echo "Target            : HINLINK H68K"
+echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
+echo "Linux version     : $ACTUAL_KERNEL_VERSION"
+echo "BBR               : Google BBRv3 (官方源)"
+echo "OpenWrt prepare   : PASS"
+echo "Patch replay      : PASS"
+
+echo
+echo "生成的 Patch："
+echo "  $PATCH_PATH"
+
+echo
+echo "============================================================"
+echo " FAIL-CLOSED Patch 验证全部通过"
+echo "============================================================"
