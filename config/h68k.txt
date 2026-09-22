@@ -7,6 +7,38 @@ CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_hinlink_h68k=y
 CONFIG_TARGET_ROOTFS_SQUASHFS=y
 CONFIG_TARGET_ROOTFS_PARTSIZE=512
 
+
+
+
+
+#
+# ============================================================
+# TCP BBR
+# OpenWrt Mainline / HINLINK H68K
+#
+# BBR：
+#   - 启用 TCP BBR
+#   - 默认 TCP 拥塞控制使用 BBR
+#   - 保留 FQ 用于 TCP pacing
+#
+# Google 官方 BBR 推荐核心配置：
+#   CONFIG_TCP_CONG_BBR=y
+#   CONFIG_DEFAULT_BBR=y
+#
+# BBRv3 的内核源码适配由 patch/public1.sh 负责，
+# 不在这里硬编码 Linux 内核版本或内部 API。
+# ============================================================
+
+CONFIG_TCP_CONG_BBR=y
+CONFIG_DEFAULT_BBR=y
+
+#
+# Fair Queue
+#
+# 现代 Linux 使用 TCP-level pacing 后，FQ 不再是 BBR
+# 工作的绝对前提，但 FQ 对高负载 TCP pacing 仍有优势。
+#
+CONFIG_NET_SCH_FQ=y
 # BBRv3
 CONFIG_TCP_CONG_BBR=y
 CONFIG_NET_SCH_FQ=y
