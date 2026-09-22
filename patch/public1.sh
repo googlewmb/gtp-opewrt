@@ -103,7 +103,7 @@ KERNEL_PATCHVER="$(detect_kernel_patchver)"
 echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
 
 # ============================================================
-# 4. 自动选择 generic patch 目录
+# 4. 自动选择 generic patch 目录（正确写法）
 # ============================================================
 
 GENERIC_DIR="target/linux/generic"
@@ -119,7 +119,7 @@ mkdir -p "$GENERIC_PATCH_DIR"
 echo "Patch directory   : $GENERIC_PATCH_DIR"
 
 # ============================================================
-# 5. 工作目录
+# 5. 工作目录（正确写法）
 # ============================================================
 
 WORK_ROOT="\( {TMPDIR:-/tmp}/openwrt-bbrv3- \){KERNEL_PATCHVER}-$$"
@@ -375,6 +375,7 @@ grep -q \
 }
 
 echo "Patch generated   : $PATCH_PATH"
+echo "Patch size        : $(wc -c < "$PATCH_PATH") bytes"
 
 # ============================================================
 # 16. 恢复原始源码
@@ -393,6 +394,12 @@ echo "============================================================"
 echo "Step 5 : OpenWrt patch 回放验证"
 echo "============================================================"
 
+# 确保 patch 文件存在
+[ -f "$PATCH_PATH" ] || {
+    echo "错误：patch 文件不存在: $PATCH_PATH"
+    exit 1
+}
+
 make target/linux/clean V=s
 make defconfig
 make target/linux/prepare V=s
@@ -410,13 +417,19 @@ LINUX_DIR="$(detect_linux_dir)"
 }
 
 # 确认 BBRv3 已被正确应用
-grep -Eq \
+if ! grep -Eq \
     '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
-    "$LINUX_DIR/net/ipv4/tcp_bbr.c" || {
+    "$LINUX_DIR/net/ipv4/tcp_bbr.c"
+then
     echo
     echo "错误：OpenWrt prepare 后没有得到 BBRv3"
+    echo "请检查 patch 是否被正确应用："
+    echo "  $PATCH_PATH"
+    echo
+    echo "当前 tcp_bbr.c 前 30 行："
+    head -n 30 "$LINUX_DIR/net/ipv4/tcp_bbr.c"
     exit 1
-}
+fi
 
 echo "OpenWrt prepare   : PASS"
 echo "BBR_VERSION=3     : PASS"
