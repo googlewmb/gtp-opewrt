@@ -32,3 +32,7 @@ BBRv3 的算法源码直接来自 [Google BBR team](https://github.com/google/bb
 ## 验证边界
 
 本地检查覆盖 YAML/Shell/Python 语法、官方 H68K 定义、Ninja 修复、DAED 锁文件、BBRv3 在 Linux 6.18.52 TCP 源码上的完整补丁回放。GitHub Actions 的实际结果是编译成功与否的依据；仅有本地检查不能认定固件已可用。
+
+## BBRv3 专用自动适配入口
+
+已接入 scripts/openwrt-bbr3.py，支持检测实际内核、发现上游候选、失败重试、完整 Kbuild 与模块版本核对。刷机后可运行 br3-check。用法和兼容边界见 [BBR3.md](scripts/BBR3.md)。
