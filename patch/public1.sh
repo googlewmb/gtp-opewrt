@@ -103,13 +103,22 @@ KERNEL_PATCHVER="$(detect_kernel_patchver)"
 echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
 
 # ============================================================
-# 4. 自动选择 generic patch 目录（正确写法）
+# 4. 自动选择 generic patch 目录
+#
+# 优先使用：
+#
+#   target/linux/generic/pending-${KERNEL_PATCHVER}
+#
+# 如果版本专用目录不存在，则使用：
+#
+#   target/linux/generic/pending
+#
 # ============================================================
 
 GENERIC_DIR="target/linux/generic"
 
-if [ -d "\( {GENERIC_DIR}/pending- \){KERNEL_PATCHVER}" ]; then
-    GENERIC_PATCH_DIR="\( {GENERIC_DIR}/pending- \){KERNEL_PATCHVER}"
+if [ -d "${GENERIC_DIR}/pending-${KERNEL_PATCHVER}" ]; then
+    GENERIC_PATCH_DIR="${GENERIC_DIR}/pending-${KERNEL_PATCHVER}"
 else
     GENERIC_PATCH_DIR="${GENERIC_DIR}/pending"
 fi
@@ -119,10 +128,45 @@ mkdir -p "$GENERIC_PATCH_DIR"
 echo "Patch directory   : $GENERIC_PATCH_DIR"
 
 # ============================================================
-# 5. 工作目录（正确写法）
+# 4.1 验证 OpenWrt 实际使用的 generic patch 目录
+#
+# 防止脚本选择的目录与 OpenWrt 实际 patch 队列不一致。
 # ============================================================
 
-WORK_ROOT="\( {TMPDIR:-/tmp}/openwrt-bbrv3- \){KERNEL_PATCHVER}-$$"
+OPENWRT_GENERIC_PATCH_DIR="$(
+    make -s -pn 2>/dev/null |
+    sed -n 's/^GENERIC_PATCH_DIR := //p' |
+    head -n 1 || true
+)"
+
+if [ -n "$OPENWRT_GENERIC_PATCH_DIR" ]; then
+
+    if [ "$OPENWRT_GENERIC_PATCH_DIR" != "$GENERIC_PATCH_DIR" ]; then
+
+        echo
+        echo "============================================================"
+        echo " FAIL-CLOSED"
+        echo "============================================================"
+        echo
+        echo "错误：脚本选择的 patch 目录与 OpenWrt 实际目录不一致"
+        echo
+        echo "脚本选择："
+        echo "  $GENERIC_PATCH_DIR"
+        echo
+        echo "OpenWrt 实际使用："
+        echo "  $OPENWRT_GENERIC_PATCH_DIR"
+        echo
+        exit 1
+    fi
+
+    echo "OpenWrt patch dir : PASS"
+fi
+
+# ============================================================
+# 5. 工作目录
+# ============================================================
+
+WORK_ROOT="${TMPDIR:-/tmp}/openwrt-bbrv3-${KERNEL_PATCHVER}-$$"
 
 rm -rf "$WORK_ROOT"
 mkdir -p "$WORK_ROOT"
@@ -243,7 +287,9 @@ detect_linux_dir() {
         head -n 1 || true
     )"
 
-    if [ -n "$dir" ] && [ -f "$dir/Makefile" ] && [ -f "$dir/net/ipv4/tcp_bbr.c" ]; then
+    if [ -n "$dir" ] \
+        && [ -f "$dir/Makefile" ] \
+        && [ -f "$dir/net/ipv4/tcp_bbr.c" ]; then
         printf '%s' "$dir"
         return 0
     fi
@@ -394,7 +440,6 @@ echo "============================================================"
 echo "Step 5 : OpenWrt patch 回放验证"
 echo "============================================================"
 
-# 确保 patch 文件存在
 [ -f "$PATCH_PATH" ] || {
     echo "错误：patch 文件不存在: $PATCH_PATH"
     exit 1
@@ -416,7 +461,10 @@ LINUX_DIR="$(detect_linux_dir)"
     exit 1
 }
 
+# ============================================================
 # 确认 BBRv3 已被正确应用
+# ============================================================
+
 if ! grep -Eq \
     '^[[:space:]]*#define[[:space:]]+BBR_VERSION[[:space:]]+3([[:space:]]|$)' \
     "$LINUX_DIR/net/ipv4/tcp_bbr.c"
@@ -435,7 +483,11 @@ echo "OpenWrt prepare   : PASS"
 echo "BBR_VERSION=3     : PASS"
 
 # ============================================================
-# 18. 最终真实验证：OpenWrt target/linux/compile
+# 18. 最终真实验证：
+#     OpenWrt target/linux/compile
+#
+# 该步骤会通过 OpenWrt 自己的 kernel build 系统
+# 对已经回放 BBRv3 patch 的 Linux kernel 进行最终验证。
 # ============================================================
 
 echo
