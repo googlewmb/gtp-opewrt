@@ -13,7 +13,7 @@
 #   7. 无法编译立即 FAIL-CLOSED
 #   8. 不猜测 TCP API
 #   9. 只生成当前内核对应 patch
-#  10. 最终执行 OpenWrt target/linux/compile 验证
+#  10. 最终由 OpenWrt 完整构建执行真实 Kbuild 验证
 #
 # Google BBRv3 官方源：
 #   https://raw.githubusercontent.com/google/bbr/v3/net/ipv4/tcp_bbr.c
@@ -449,19 +449,38 @@ echo "OpenWrt prepare   : PASS"
 echo "BBR_VERSION=3     : PASS"
 
 # ============================================================
-# 19. 最终真实验证
+# 19. BBRv3 Patch 验证完成
 #
-# 使用 OpenWrt target/linux/compile
-# 对已经回放 BBRv3 patch 的 Linux kernel
-# 执行真实 Kbuild 编译验证。
+# 注意：
+#   这里不提前执行 target/linux/compile。
+#
+#   完整 OpenWrt Workflow 后续的：
+#
+#       make -j"$(nproc)" V=s
+#
+#   会自动先准备：
+#
+#       tools
+#       ↓
+#       toolchain
+#       ↓
+#       target/linux
+#       ↓
+#       package
+#       ↓
+#       firmware
+#
+#   因此真实 Linux Kbuild 由完整 OpenWrt 构建流程验证。
 # ============================================================
 
 echo
 echo "============================================================"
-echo "Step 6 : OpenWrt target/linux/compile（真实 Kbuild 验证）"
+echo "Step 6 : BBRv3 Patch 验证完成"
 echo "============================================================"
 
-make target/linux/compile -j"$(nproc)" V=s
+echo "Patch replay      : PASS"
+echo "BBR_VERSION=3     : PASS"
+echo "等待 OpenWrt 完整构建进行最终 Kbuild 验证"
 
 # ============================================================
 # 20. 最终确认
@@ -469,7 +488,7 @@ make target/linux/compile -j"$(nproc)" V=s
 
 echo
 echo "============================================================"
-echo " Google BBRv3 全自动适配完成"
+echo " Google BBRv3 Patch 适配完成"
 echo "============================================================"
 echo
 
@@ -478,7 +497,7 @@ echo "KERNEL_PATCHVER   : $KERNEL_PATCHVER"
 echo "Linux version     : $ACTUAL_KERNEL_VERSION"
 echo "BBR               : Google BBRv3 (官方源)"
 echo "OpenWrt prepare   : PASS"
-echo "OpenWrt compile   : PASS"
+echo "Patch replay      : PASS"
 
 echo
 echo "生成的 Patch："
@@ -486,5 +505,5 @@ echo "  $PATCH_PATH"
 
 echo
 echo "============================================================"
-echo " FAIL-CLOSED 验证全部通过"
+echo " FAIL-CLOSED Patch 验证全部通过"
 echo "============================================================"
