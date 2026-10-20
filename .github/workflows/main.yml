@@ -1,0 +1,537 @@
+name: HINLINK-H68K-CDF-USB-OpenWrt-Main
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      BUILD_CONFIG_ONLY:
+        description: "仅生成完整 .config，不编译固件"
+        required: true
+        default: false
+        type: boolean
+
+  schedule:
+    - cron: "16 16 * * *"
+
+env:
+  TZ: Asia/Shanghai
+  OPENWRT_REPO: https://github.com/openwrt/openwrt.git
+  OPENWRT_BRANCH: main
+  HINLINK_REPO: https://github.com/Beaverfffan/immortalwrt-hinlink.git
+  HINLINK_BRANCH: main
+  DEVICE_ID: hinlink_opc-h68k-c-d-f-usb
+  DEVICE_DTS: rk3568-hinlink-h68k-c-d-f-usb
+
+jobs:
+  build:
+    name: H68K-C/D/F-USB3.0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    env:
+      BUILD_CONFIG_ONLY: ${{ github.event.inputs.BUILD_CONFIG_ONLY || 'false' }}
+
+    steps:
+      - name: Checkout 工作流仓库
+        uses: actions/checkout@v4
+
+      - name: 设置时区和构建日期
+        run: |
+          sudo timedatectl set-timezone "$TZ"
+          echo "DATE_TAG=$(date +'%Y%m%d-%H%M')" >> "$GITHUB_ENV"
+          echo "DATE_TEXT=$(date +'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk gcc-multilib \
+            g++-multilib gettext git libncurses-dev libssl-dev \
+            python3 python3-dev python3-setuptools python3-pyelftools \
+            python3-pip python3-yaml rsync unzip zlib1g-dev file wget \
+            curl ca-certificates subversion swig time xsltproc \
+            libelf-dev ecj fastjar java-propose-classpath \
+            device-tree-compiler ccache libgmp3-dev libmpc-dev \
+            libmpfr-dev libreadline-dev libtool autoconf automake \
+            autopoint pkgconf patch make cmake ninja-build
+
+      - name: 下载 OpenWrt 主线源码
+        run: |
+          git clone --depth 1 \
+            -b "$OPENWRT_BRANCH" \
+            "$OPENWRT_REPO" openwrt
+
+          cd openwrt
+          echo "OpenWrt commit:"
+          git log -1 --format='%H %s'
+
+      - name: 下载 HINLINK 硬件适配仓库
+        run: |
+          git clone --depth 1 \
+            -b "$HINLINK_BRANCH" \
+            "$HINLINK_REPO" hinlink-adapt
+
+          cd hinlink-adapt
+          echo "HINLINK adaptation commit:"
+          git log -1 --format='%H %s'
+
+      - name: 移植 H68K C/D/F USB 硬件适配
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd openwrt
+
+          ADAPT="$GITHUB_WORKSPACE/hinlink-adapt"
+          ROCK="target/linux/rockchip"
+          DTS_SRC="$ADAPT/target/linux/rockchip/files/arch/arm64/boot/dts/rockchip"
+          DTS_DST="$ROCK/files/arch/arm64/boot/dts/rockchip"
+
+          # ---------------------------------------------------------
+          # 1. 检查必需的适配文件
+          # ---------------------------------------------------------
+          for file in \
+            "$DTS_SRC/rk3568-hinlink-h68k-c-d-f-usb.dts" \
+            "$DTS_SRC/rk3568-hinlink-opc.dtsi"
+          do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: 缺少必需的 H68K DTS 文件：$file"
+              exit 1
+            fi
+          done
+
+          # ---------------------------------------------------------
+          # 2. 只移植目标机型所需的 DTS 和公共 DTSI
+          # ---------------------------------------------------------
+          mkdir -p "$DTS_DST"
+
+          install -m 0644 \
+            "$DTS_SRC/rk3568-hinlink-h68k-c-d-f-usb.dts" \
+            "$DTS_DST/rk3568-hinlink-h68k-c-d-f-usb.dts"
+
+          install -m 0644 \
+            "$DTS_SRC/rk3568-hinlink-opc.dtsi" \
+            "$DTS_DST/rk3568-hinlink-opc.dtsi"
+
+          # ---------------------------------------------------------
+          # 3. 注册新 DTB
+          # OpenWrt 主线已经有通用 H68K DTB，但专用 DTS 仍需注册。
+          # 使用独立内核补丁，不覆盖上游整个 DTS Makefile。
+          # ---------------------------------------------------------
+          KERNEL_PATCHVER="$(
+            sed -n 's/^KERNEL_PATCHVER:=//p' \
+              "$ROCK/Makefile" | head -n 1
+          )"
+
+          if [ -z "$KERNEL_PATCHVER" ]; then
+            echo "ERROR: 无法读取 Rockchip 内核版本"
+            exit 1
+          fi
+
+          PATCH_DIR="$ROCK/patches-$KERNEL_PATCHVER"
+          mkdir -p "$PATCH_DIR"
+
+          if ! grep -Rqs \
+            'rk3568-hinlink-h68k-c-d-f-usb\.dtb' \
+            "$ROCK" --include='*.patch' \
+            --include='Makefile' 2>/dev/null; then
+
+            cat > "$PATCH_DIR/999-add-h68k-c-d-f-usb-dtb.patch" <<'PATCH'
+          --- a/arch/arm64/boot/dts/rockchip/Makefile
+          +++ b/arch/arm64/boot/dts/rockchip/Makefile
+          @@ -1,1 +1,2 @@
+           dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-hinlink-h68k.dtb
+          +dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-hinlink-h68k-c-d-f-usb.dtb
+          PATCH
+
+          else
+            echo "检测到相关 DTB 注册内容，跳过重复创建补丁"
+          fi
+
+          # ---------------------------------------------------------
+          # 4. 添加独立设备定义
+          # 继承主线 H68K 基础设备包，不覆盖已有通用 H68K 定义。
+          # ---------------------------------------------------------
+          IMAGE_MK="$ROCK/image/armv8.mk"
+
+          if ! grep -q \
+            'define Device/hinlink_opc-h68k-c-d-f-usb' \
+            "$IMAGE_MK"; then
+
+            cat >> "$IMAGE_MK" <<'DEVICE'
+
+          # Dedicated HINLINK H68K C/D/F USB3.0 variant
+          define Device/hinlink_opc-h68k-c-d-f-usb
+            $(Device/hinlink_h6xk)
+            DEVICE_MODEL := OPC-H68K C/D/F USB3.0
+            DEVICE_DTS := rk3568-hinlink-h68k-c-d-f-usb
+            UBOOT_DEVICE_NAME := hinlink-h68k-rk3568
+          endef
+          TARGET_DEVICES += hinlink_opc-h68k-c-d-f-usb
+          DEVICE
+          fi
+
+          # ---------------------------------------------------------
+          # 5. 合并板级网络和 LED 配置
+          # 只插入目标 compatible 分支，不覆盖主线原文件。
+          # ---------------------------------------------------------
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          rock = Path("target/linux/rockchip")
+          board_dir = rock / "armv8/base-files/etc/board.d"
+
+          network = board_dir / "02_network"
+          leds = board_dir / "01_leds"
+
+          def find_case_spans(text):
+              spans = []
+              start_re = re.compile(
+                  r'^[ \t]*case[ \t]+"?\$board"?[ \t]+in[ \t]*$',
+                  re.M
+              )
+
+              pos = 0
+              while True:
+                  match = start_re.search(text, pos)
+                  if not match:
+                      break
+
+                  end_match = re.search(
+                      r'^[ \t]*esac[ \t]*$',
+                      text[match.end():],
+                      re.M
+                  )
+
+                  if not end_match:
+                      raise RuntimeError("case 块缺少 esac")
+
+                  body_start = match.end()
+                  body_end = body_start + end_match.start()
+
+                  spans.append((body_start, body_end))
+                  pos = body_start + end_match.end()
+
+              return spans
+
+          def insert_before_default(text, body_start, body_end, snippet):
+              body = text[body_start:body_end]
+
+              if "hinlink,opc-h68k-c-d-f-usb)" in body:
+                  return text, False
+
+              fallback = re.search(
+                  r'^[ \t]*\*\)[ \t]*$',
+                  body,
+                  re.M
+              )
+
+              if not fallback:
+                  raise RuntimeError(
+                      "找不到官方 case 的 *) 兜底分支，拒绝盲目修改"
+                  )
+
+              insert_at = body_start + fallback.start()
+              return text[:insert_at] + snippet + text[insert_at:], True
+
+          # 02_network：接口映射 + 稳定 MAC 地址
+          if not network.is_file():
+              sys.exit("ERROR: 找不到 OpenWrt 的 02_network")
+
+          text = network.read_text(encoding="utf-8")
+          spans = find_case_spans(text)
+
+          if len(spans) != 2:
+              sys.exit(
+                  f"ERROR: 02_network 的 case 块数量为 {len(spans)}，"
+                  "与预期不符，停止修改"
+              )
+
+          interface_branch = """
+          \t\t# HINLINK H68K C/D/F USB3.0
+          \t\thinlink,opc-h68k-c-d-f-usb)
+          \t\t\tucidef_set_interfaces_lan_wan 'eth1 eth2 eth3' 'eth0'
+          \t\t\t;;
+          """
+
+          mac_branch = """
+          \t\t# HINLINK H68K C/D/F USB3.0
+          \t\thinlink,opc-h68k-c-d-f-usb)
+          \t\t\twan_mac=$(macaddr_generate_from_mmc_cid mmcblk0)
+          \t\t\tlan_mac=$(macaddr_add "$wan_mac" 1)
+          \t\t\t;;
+          """
+
+          changed = False
+
+          # 从后往前插入，避免前一次修改影响后续位置。
+          for index, snippet in [
+              (1, mac_branch),
+              (0, interface_branch)
+          ]:
+              spans = find_case_spans(text)
+              start, end = spans[index]
+              text, did_change = insert_before_default(
+                  text, start, end, snippet
+              )
+              changed = changed or did_change
+
+          if changed:
+              network.write_text(text, encoding="utf-8")
+
+          # 01_leds：目标机型 WAN 指示灯
+          if not leds.is_file():
+              sys.exit("ERROR: 找不到 OpenWrt 的 01_leds")
+
+          text = leds.read_text(encoding="utf-8")
+          spans = find_case_spans(text)
+
+          if len(spans) != 1:
+              sys.exit(
+                  f"ERROR: 01_leds 的 case 块数量为 {len(spans)}，"
+                  "与预期不符，停止修改"
+              )
+
+          led_branch = """
+          \t# HINLINK H68K C/D/F USB3.0
+          \thinlink,opc-h68k-c-d-f-usb)
+          \t\tucidef_set_led_netdev "wan" "WAN" "blue:wan" "eth0"
+          \t\t;;
+          """
+
+          start, end = spans[0]
+          text, did_change = insert_before_default(
+              text, start, end, led_branch
+          )
+
+          if did_change:
+              leds.write_text(text, encoding="utf-8")
+
+          print("H68K C/D/F USB 网络映射和 LED 配置已合并")
+          PY
+
+          # ---------------------------------------------------------
+          # 6. 输出关键适配结果
+          # ---------------------------------------------------------
+          echo "===== 设备定义 ====="
+          grep -n -A 7 \
+            'define Device/hinlink_opc-h68k-c-d-f-usb' \
+            "$IMAGE_MK"
+
+          echo "===== DTS 文件 ====="
+          ls -l "$DTS_DST/rk3568-hinlink-h68k-c-d-f-usb.dts"
+          ls -l "$DTS_DST/rk3568-hinlink-opc.dtsi"
+
+          echo "===== 网络映射 ====="
+          grep -n -A 3 \
+            'hinlink,opc-h68k-c-d-f-usb)' \
+            "$ROCK/armv8/base-files/etc/board.d/02_network"
+
+          echo "===== LED 映射 ====="
+          grep -n -A 3 \
+            'hinlink,opc-h68k-c-d-f-usb)' \
+            "$ROCK/armv8/base-files/etc/board.d/01_leds"
+
+      - name: 更新并安装 feeds
+        working-directory: openwrt
+        run: |
+          set -Eeuo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 生成主线专用配置
+        working-directory: openwrt
+        run: |
+          set -Eeuo pipefail
+
+          cat > .config <<'CONFIG'
+          CONFIG_TARGET_rockchip=y
+          CONFIG_TARGET_rockchip_armv8=y
+          CONFIG_TARGET_rockchip_armv8_DEVICE_hinlink_opc-h68k-c-d-f-usb=y
+
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+
+          CONFIG_PACKAGE_kmod-r8169=y
+          CONFIG_PACKAGE_kmod-ata-ahci-dwc=y
+          CONFIG_PACKAGE_kmod-mt7921e=y
+          CONFIG_PACKAGE_wpad-basic-mbedtls=y
+          CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_luci-proto-ppp=y
+          CONFIG_PACKAGE_ppp=y
+          CONFIG_PACKAGE_ppp-mod-pppoe=y
+          CONFIG_PACKAGE_dnsmasq=y
+          CONFIG_PACKAGE_firewall4=y
+          CONFIG_PACKAGE_nftables=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_tcpdump=y
+          CONFIG_PACKAGE_iperf3=y
+          CONFIG_PACKAGE_ethtool=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_coreutils-timeout=y
+          CONFIG_PACKAGE_kmod-usb-storage=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-vfat=y
+          CONFIG_PACKAGE_kmod-nls-cp437=y
+          CONFIG_PACKAGE_kmod-nls-iso8859-1=y
+          CONFIG_PACKAGE_kmod-nls-utf8=y
+          CONFIG_PACKAGE_kmod-usb-net=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
+          CONFIG_PACKAGE_kmod-usb-net-rndis=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
+          CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
+          CONFIG_PACKAGE_kmod-usb-serial-option=y
+          CONFIG_PACKAGE_usb-modeswitch=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+          CONFIG_PACKAGE_ttyd=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_lsblk=y
+          CONFIG_PACKAGE_blkid=y
+          CONFIG_PACKAGE_fdisk=y
+          CONFIG_PACKAGE_smartmontools=y
+          CONFIG_PACKAGE_samba4-server=y
+          CONFIG_PACKAGE_wsdd2=y
+          CONFIG_PACKAGE_luci-app-samba4=y
+          CONFIG_PACKAGE_luci-i18n-samba4-zh-cn=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+          CONFIG_PACKAGE_luci-app-attendedsysupgrade=y
+          CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-cn=y
+          CONFIG_PACKAGE_luci-app-commands=y
+          CONFIG_PACKAGE_luci-i18n-commands-zh-cn=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+          CONFIG_PACKAGE_luci-app-watchcat=y
+          CONFIG_PACKAGE_luci-i18n-watchcat-zh-cn=y
+          CONFIG
+          make defconfig
+
+          if ! grep -q \
+            '^CONFIG_TARGET_rockchip_armv8_DEVICE_hinlink_opc-h68k-c-d-f-usb=y$' \
+            .config; then
+            echo "ERROR: 主线 defconfig 未保留 H68K C/D/F USB 目标"
+            grep '^CONFIG_TARGET_rockchip_armv8_DEVICE_' .config || true
+            exit 1
+          fi
+
+          echo "===== 最终目标 ====="
+          grep '^CONFIG_TARGET_rockchip_armv8_DEVICE_.*=y$' .config
+
+          mkdir -p config-output
+          cp .config "config-output/h68k-c-d-f-usb-${DATE_TAG}.config"
+
+      - name: 上传完整配置
+        if: env.BUILD_CONFIG_ONLY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-main-H68K-CDF-USB-config-${{ env.DATE_TAG }}
+          path: openwrt/config-output/*.config
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 下载编译依赖
+        if: env.BUILD_CONFIG_ONLY != 'true'
+        working-directory: openwrt
+        run: |
+          set -Eeuo pipefail
+          make download -j"$(nproc)"
+          find dl -size -1024c -type f -delete
+
+      - name: 编译固件
+        if: env.BUILD_CONFIG_ONLY != 'true'
+        working-directory: openwrt
+        run: |
+          set -Eeuo pipefail
+          make -j"$(nproc)" || make -j1 V=s
+
+      - name: 检查编译结果
+        if: env.BUILD_CONFIG_ONLY != 'true'
+        working-directory: openwrt
+        run: |
+          set -Eeuo pipefail
+
+          TARGET_DIR="bin/targets/rockchip/armv8"
+
+          if [ ! -d "$TARGET_DIR" ]; then
+            echo "ERROR: 未找到 Rockchip ARMv8 固件目录"
+            find bin/targets -maxdepth 4 -type d || true
+            exit 1
+          fi
+
+          echo "===== 生成的固件 ====="
+          find "$TARGET_DIR" -maxdepth 1 -type f \
+            \( -name '*.img.gz' -o \
+               -name '*.img' -o \
+               -name '*.bin' -o \
+               -name '*.manifest' -o \
+               -name '*.buildinfo' -o \
+               -name '*.json' \) \
+            -printf '%f %s bytes\n'
+
+          if ! find "$TARGET_DIR" -maxdepth 1 -type f \
+            \( -name '*hinlink*' -o -name '*HINLINK*' \) \
+            | grep -q .; then
+            echo "WARNING: 未找到文件名含 HINLINK 的固件，需核实镜像产物"
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/firmware"
+          cp .config "$GITHUB_WORKSPACE/firmware/config-${DATE_TAG}.config"
+          cp "$TARGET_DIR"/* "$GITHUB_WORKSPACE/firmware/" 2>/dev/null || true
+
+          # 记录 DTB 和设备定义，方便核对是否编入专用目标
+          {
+            echo "Device: $DEVICE_ID"
+            echo "DTS: $DEVICE_DTS"
+            echo "OpenWrt branch: $OPENWRT_BRANCH"
+            echo "Build time: $DATE_TEXT"
+            echo
+            echo "Selected target:"
+            grep '^CONFIG_TARGET_rockchip_armv8_DEVICE_.*=y$' .config
+          } > "$GITHUB_WORKSPACE/firmware/BUILD-INFO.txt"
+
+      - name: 上传固件和构建信息
+        if: steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-main-H68K-CDF-USB-${{ env.DATE_TAG }}
+          path: firmware/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 发布 GitHub Release
+        if: steps.compile.outcome == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OpenWrt-main-H68K-CDF-USB-${{ env.DATE_TAG }}
+          tag_name: h68k-c-d-f-usb-${{ github.run_number }}
+          files: firmware/*
+          body: |
+            OpenWrt main 专用 HINLINK H68K C/D/F USB3.0 构建。
+
+            主源码：openwrt/openwrt main
+            硬件适配：Beaverfffan/immortalwrt-hinlink
+            设备目标：hinlink_opc-h68k-c-d-f-usb
+
+            注意：首次编译产物仍需检查 DTB、设备定义及启动情况；
+            未经实机验证，不应视为已确认可安全刷写。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 查看磁盘使用情况
+        if: always()
+        run: df -hT
