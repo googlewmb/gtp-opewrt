@@ -26,7 +26,7 @@ env:
 
 jobs:
   build:
-    name: H68K-C/D/F-USB3.0
+    name: H68K-C-D-F-USB-OpenWrt-Main
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
@@ -34,12 +34,13 @@ jobs:
       BUILD_CONFIG_ONLY: ${{ github.event.inputs.BUILD_CONFIG_ONLY || 'false' }}
 
     steps:
-      - name: Checkout 工作流仓库
+      - name: Checkout 编译工作流仓库
         uses: actions/checkout@v4
 
-      - name: 设置时区和构建日期
+      - name: 设置构建信息
+        shell: bash
         run: |
-          sudo timedatectl set-timezone "$TZ"
+          set -Eeuo pipefail
           echo "DATE_TAG=$(date +'%Y%m%d-%H%M')" >> "$GITHUB_ENV"
           echo "DATE_TEXT=$(date +'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
 
@@ -59,27 +60,37 @@ jobs:
             libmpfr-dev libreadline-dev libtool autoconf automake \
             autopoint pkgconf patch make cmake ninja-build
 
-      - name: 下载 OpenWrt 主线源码
+      - name: 下载 OpenWrt main
+        shell: bash
         run: |
+          set -Eeuo pipefail
+
           git clone --depth 1 \
+            --single-branch \
             -b "$OPENWRT_BRANCH" \
             "$OPENWRT_REPO" openwrt
 
           cd openwrt
-          echo "OpenWrt commit:"
+
+          echo "===== OpenWrt commit ====="
           git log -1 --format='%H %s'
 
       - name: 下载 HINLINK 硬件适配仓库
+        shell: bash
         run: |
+          set -Eeuo pipefail
+
           git clone --depth 1 \
+            --single-branch \
             -b "$HINLINK_BRANCH" \
             "$HINLINK_REPO" hinlink-adapt
 
           cd hinlink-adapt
-          echo "HINLINK adaptation commit:"
+
+          echo "===== HINLINK adaptation commit ====="
           git log -1 --format='%H %s'
 
-      - name: 移植 H68K C/D/F USB 硬件适配
+      - name: 移植 H68K C-D-F USB DTS 与设备定义
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -90,37 +101,161 @@ jobs:
           ROCK="target/linux/rockchip"
           DTS_SRC="$ADAPT/target/linux/rockchip/files/arch/arm64/boot/dts/rockchip"
           DTS_DST="$ROCK/files/arch/arm64/boot/dts/rockchip"
+          IMAGE_MK="$ROCK/image/armv8.mk"
+
+          DEVICE_DTS_FILE="$DTS_SRC/$DEVICE_DTS.dts"
+          DEVICE_MK_SOURCE="$ADAPT/target/linux/rockchip/image/armv8.mk.hinlink"
 
           # ---------------------------------------------------------
-          # 1. 检查必需的适配文件
+          # 1. 严格检查源文件，缺失时立即终止
           # ---------------------------------------------------------
-          for file in \
-            "$DTS_SRC/rk3568-hinlink-h68k-c-d-f-usb.dts" \
-            "$DTS_SRC/rk3568-hinlink-opc.dtsi"
-          do
-            if [ ! -f "$file" ]; then
-              echo "ERROR: 缺少必需的 H68K DTS 文件：$file"
-              exit 1
-            fi
-          done
+          test -f "$DEVICE_DTS_FILE" || {
+            echo "ERROR: 找不到专用 DTS：$DEVICE_DTS_FILE"
+            exit 1
+          }
+
+          test -f "$DEVICE_MK_SOURCE" || {
+            echo "ERROR: 找不到 HINLINK 设备定义文件：$DEVICE_MK_SOURCE"
+            exit 1
+          }
+
+          test -f "$IMAGE_MK" || {
+            echo "ERROR: 找不到 OpenWrt 主线设备定义：$IMAGE_MK"
+            exit 1
+          }
 
           # ---------------------------------------------------------
-          # 2. 只移植目标机型所需的 DTS 和公共 DTSI
+          # 2. 递归复制 DTS 中引用的本地 DTSI
+          # 仅复制目标 DTS 及其实际引用的本地文件
           # ---------------------------------------------------------
-          mkdir -p "$DTS_DST"
+          export DTS_SRC DTS_DST DEVICE_DTS
 
-          install -m 0644 \
-            "$DTS_SRC/rk3568-hinlink-h68k-c-d-f-usb.dts" \
-            "$DTS_DST/rk3568-hinlink-h68k-c-d-f-usb.dts"
+          python3 - <<'PY'
+          import os
+          import re
+          import shutil
+          import sys
+          from pathlib import Path
 
-          install -m 0644 \
-            "$DTS_SRC/rk3568-hinlink-opc.dtsi" \
-            "$DTS_DST/rk3568-hinlink-opc.dtsi"
+          src_root = Path(os.environ["DTS_SRC"])
+          dst_root = Path(os.environ["DTS_DST"])
+          device_dts = os.environ["DEVICE_DTS"]
+
+          copied = set()
+          visiting = set()
+
+          include_re = re.compile(
+              r'^\s*(?:#include|/include/)\s*["<]([^">]+)[">]',
+              re.M
+          )
+
+          def copy_dts(name):
+              source = src_root / name
+              destination = dst_root / name
+
+              if not source.is_file():
+                  # 不是适配仓库提供的文件时，保留主线已有文件。
+                  # 后续 DTS 编译会检查引用是否真实存在。
+                  if destination.is_file():
+                      return
+                  return
+
+              if name in copied:
+                  return
+
+              if name in visiting:
+                  raise RuntimeError(f"DTSI 循环引用：{name}")
+
+              visiting.add(name)
+
+              text = source.read_text(encoding="utf-8")
+
+              for include in include_re.findall(text):
+                  # 只处理 DTS 目录内的本地文件。
+                  if "/" in include:
+                      continue
+
+                  if (src_root / include).is_file():
+                      copy_dts(include)
+
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(source, destination)
+
+              visiting.remove(name)
+              copied.add(name)
+
+              print(f"已移植：{name}")
+
+          copy_dts(device_dts + ".dts")
+
+          if device_dts + ".dts" not in copied:
+              sys.exit("ERROR: 专用 DTS 没有被复制")
+
+          print("===== DTS 文件移植完成 =====")
+          for name in sorted(copied):
+              print(name)
+          PY
 
           # ---------------------------------------------------------
-          # 3. 注册新 DTB
-          # OpenWrt 主线已经有通用 H68K DTB，但专用 DTS 仍需注册。
-          # 使用独立内核补丁，不覆盖上游整个 DTS Makefile。
+          # 3. 从 HINLINK 适配仓库提取专用设备定义
+          # 不手写网口、设备型号或 U-Boot 参数
+          # ---------------------------------------------------------
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          device = os.environ["DEVICE_ID"]
+          source = Path(
+              os.environ["GITHUB_WORKSPACE"]
+          ) / "hinlink-adapt/target/linux/rockchip/image/armv8.mk.hinlink"
+
+          target = Path(
+              os.environ["GITHUB_WORKSPACE"]
+          ) / "openwrt/target/linux/rockchip/image/armv8.mk"
+
+          text = source.read_text(encoding="utf-8")
+
+          pattern = re.compile(
+              rf'(?ms)^define Device/{re.escape(device)}\s*\n'
+              rf'.*?^endef\s*\n'
+              rf'\s*^TARGET_DEVICES \+= {re.escape(device)}\s*$'
+          )
+
+          match = pattern.search(text)
+
+          if not match:
+              sys.exit(
+                  f"ERROR: 适配仓库中没有找到完整设备定义：{device}"
+              )
+
+          block = match.group(0).rstrip() + "\n"
+
+          target_text = target.read_text(encoding="utf-8")
+
+          if re.search(
+              rf'^define Device/{re.escape(device)}\s*$',
+              target_text,
+              re.M
+          ):
+              sys.exit(
+                  f"ERROR: 主线已经存在同名设备定义，"
+                  f"拒绝重复追加：{device}"
+              )
+
+          target.write_text(
+              target_text.rstrip() + "\n\n" + block + "\n",
+              encoding="utf-8"
+          )
+
+          print("已移植适配仓库中的专用设备定义：")
+          print(block)
+          PY
+
+          # ---------------------------------------------------------
+          # 4. 合并 HINLINK 内核配置片段
+          # 仅更新同名配置项，避免同一配置在文件内重复冲突
           # ---------------------------------------------------------
           KERNEL_PATCHVER="$(
             sed -n 's/^KERNEL_PATCHVER:=//p' \
@@ -128,19 +263,116 @@ jobs:
           )"
 
           if [ -z "$KERNEL_PATCHVER" ]; then
-            echo "ERROR: 无法读取 Rockchip 内核版本"
+            echo "ERROR: 无法读取 Rockchip KERNEL_PATCHVER"
             exit 1
           fi
 
+          CONFIG_APPEND="$ADAPT/target/linux/rockchip/hinlink-config.append"
+          KERNEL_CONFIG="$ROCK/armv8/config-$KERNEL_PATCHVER"
+
+          if [ -f "$CONFIG_APPEND" ]; then
+            if [ ! -f "$KERNEL_CONFIG" ]; then
+              echo "ERROR: 主线内核配置文件不存在：$KERNEL_CONFIG"
+              exit 1
+            fi
+
+            python3 - "$CONFIG_APPEND" "$KERNEL_CONFIG" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          fragment = Path(sys.argv[1])
+          config = Path(sys.argv[2])
+
+          original = config.read_text(encoding="utf-8").splitlines()
+          additions = fragment.read_text(encoding="utf-8").splitlines()
+
+          parsed = []
+          keys = set()
+
+          for line in additions:
+              stripped = line.strip()
+
+              if not stripped or stripped.startswith("#"):
+                  parsed.append(line)
+                  continue
+
+              match = re.match(r'^(CONFIG_[A-Za-z0-9_]+)=', stripped)
+
+              if not match:
+                  parsed.append(line)
+                  continue
+
+              key = match.group(1)
+
+              if key in keys:
+                  continue
+
+              keys.add(key)
+              parsed.append(line)
+
+          # 删除原文件中同名设置，再附加适配仓库的最终设置。
+          def config_key(line):
+              match = re.match(r'^\s*(CONFIG_[A-Za-z0-9_]+)=', line)
+              if match:
+                  return match.group(1)
+
+              match = re.match(
+                  r'^\s*#\s*(CONFIG_[A-Za-z0-9_]+)\s+is not set',
+                  line
+              )
+
+              if match:
+                  return match.group(1)
+
+              return None
+
+          filtered = [
+              line for line in original
+              if config_key(line) not in keys
+          ]
+
+          filtered.extend([
+              "",
+              "# HINLINK configuration fragment",
+              *parsed
+          ])
+
+          config.write_text(
+              "\n".join(filtered).rstrip() + "\n",
+              encoding="utf-8"
+          )
+
+          print(f"已合并内核配置：{fragment}")
+          print(f"目标内核配置：{config}")
+          PY
+          else
+            echo "ERROR: 适配仓库缺少 $CONFIG_APPEND"
+            exit 1
+          fi
+
+          # ---------------------------------------------------------
+          # 5. 注册专用 DTB
+          # 基于主线已有 H68K DTB 行生成独立补丁。
+          # 不覆盖整个 Linux DTS Makefile。
+          # ---------------------------------------------------------
           PATCH_DIR="$ROCK/patches-$KERNEL_PATCHVER"
           mkdir -p "$PATCH_DIR"
 
-          if ! grep -Rqs \
-            'rk3568-hinlink-h68k-c-d-f-usb\.dtb' \
-            "$ROCK" --include='*.patch' \
-            --include='Makefile' 2>/dev/null; then
+          PATCH_FILE="$PATCH_DIR/999-add-h68k-c-d-f-usb-dtb.patch"
 
-            cat > "$PATCH_DIR/999-add-h68k-c-d-f-usb-dtb.patch" <<'PATCH'
+          if grep -Rqs "$DEVICE_DTS\.dtb" "$ROCK" \
+              --include='*.patch' \
+              --include='Makefile'; then
+            echo "检测到专用 DTB 注册内容，检查是否重复"
+            if grep -Rqs "$DEVICE_DTS\.dtb" "$PATCH_DIR" \
+                --include='*.patch'; then
+              echo "ERROR: 专用 DTB 已由补丁注册，请先检查冲突"
+              exit 1
+            fi
+          fi
+
+          cat > "$PATCH_FILE" <<'PATCH'
           --- a/arch/arm64/boot/dts/rockchip/Makefile
           +++ b/arch/arm64/boot/dts/rockchip/Makefile
           @@ -1,1 +1,2 @@
@@ -148,205 +380,224 @@ jobs:
           +dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-hinlink-h68k-c-d-f-usb.dtb
           PATCH
 
-          else
-            echo "检测到相关 DTB 注册内容，跳过重复创建补丁"
-          fi
-
           # ---------------------------------------------------------
-          # 4. 添加独立设备定义
-          # 继承主线 H68K 基础设备包，不覆盖已有通用 H68K 定义。
+          # 6. 合并适配仓库中的网络映射和 LED 分支
+          # 直接复用适配仓库已有分支，不自行猜测端口对应关系。
+          # 支持主线文件没有 *) 默认分支的情况。
           # ---------------------------------------------------------
-          IMAGE_MK="$ROCK/image/armv8.mk"
+          export ADAPT ROCK DEVICE_ID
 
-          if ! grep -q \
-            'define Device/hinlink_opc-h68k-c-d-f-usb' \
-            "$IMAGE_MK"; then
-
-            cat >> "$IMAGE_MK" <<'DEVICE'
-
-          # Dedicated HINLINK H68K C/D/F USB3.0 variant
-          define Device/hinlink_opc-h68k-c-d-f-usb
-            $(Device/hinlink_h6xk)
-            DEVICE_MODEL := OPC-H68K C/D/F USB3.0
-            DEVICE_DTS := rk3568-hinlink-h68k-c-d-f-usb
-            UBOOT_DEVICE_NAME := hinlink-h68k-rk3568
-          endef
-          TARGET_DEVICES += hinlink_opc-h68k-c-d-f-usb
-          DEVICE
-          fi
-
-          # ---------------------------------------------------------
-          # 5. 合并板级网络和 LED 配置
-          # 只插入目标 compatible 分支，不覆盖主线原文件。
-          # ---------------------------------------------------------
           python3 - <<'PY'
-          from pathlib import Path
+          import os
           import re
           import sys
+          from pathlib import Path
 
-          rock = Path("target/linux/rockchip")
-          board_dir = rock / "armv8/base-files/etc/board.d"
+          adapt = Path(os.environ["ADAPT"])
+          rock = Path(os.environ["ROCK"])
+          device = os.environ["DEVICE_ID"]
 
-          network = board_dir / "02_network"
-          leds = board_dir / "01_leds"
+          files = [
+              "armv8/base-files/etc/board.d/02_network",
+              "armv8/base-files/etc/board.d/01_leds",
+          ]
 
-          def find_case_spans(text):
-              spans = []
-              start_re = re.compile(
-                  r'^[ \t]*case[ \t]+"?\$board"?[ \t]+in[ \t]*$',
-                  re.M
-              )
+          def parse_case_blocks(lines):
+              blocks = []
+              depth = 0
+              start = None
 
-              pos = 0
-              while True:
-                  match = start_re.search(text, pos)
-                  if not match:
+              for i, line in enumerate(lines):
+                  if re.match(r'^\s*case\b.*\bin\s*(?:#.*)?$', line):
+                      if depth == 0:
+                          start = i
+                      depth += 1
+                      continue
+
+                  if re.match(r'^\s*esac\b', line):
+                      if depth:
+                          depth -= 1
+                          if depth == 0 and start is not None:
+                              blocks.append((start, i))
+                              start = None
+
+              if depth:
+                  raise RuntimeError("检测到没有闭合的 shell case/esac 块")
+
+              return blocks
+
+          def extract_device_branches(lines, blocks):
+              branches = []
+
+              for case_start, case_end in blocks:
+                  i = case_start + 1
+
+                  while i < case_end:
+                      line = lines[i]
+
+                      if (
+                          device in line
+                          and ")" in line
+                          and not line.lstrip().startswith("#")
+                      ):
+                          branch_start = i
+                          j = i + 1
+
+                          while j < case_end:
+                              if re.match(r'^\s*;;(?:\s|$)', lines[j]):
+                                  j += 1
+                                  break
+                              j += 1
+
+                          if j > case_end:
+                              raise RuntimeError(
+                                  f"{device} 分支缺少 ;; 结束符"
+                              )
+
+                          branch = lines[branch_start:j]
+                          branches.append({
+                              "case_start": case_start,
+                              "case_end": case_end,
+                              "branch": branch,
+                          })
+
+                          i = j
+                          continue
+
+                      i += 1
+
+              return branches
+
+          def branch_functions(branch):
+              text = "".join(branch)
+              return set(re.findall(
+                  r'\b((?:ucidef|macaddr)_[A-Za-z0-9_]+)\s*\(',
+                  text
+              ))
+
+          def insert_branch(lines, blocks, branch_info):
+              branch = branch_info["branch"]
+
+              if any(device in line for line in lines):
+                  return lines, False
+
+              functions = branch_functions(branch)
+
+              candidates = []
+
+              for start, end in blocks:
+                  body = "".join(lines[start:end + 1])
+
+                  if any(
+                      re.search(r'\b' + re.escape(fn) + r'\s*\(', body)
+                      for fn in functions
+                  ):
+                      candidates.append((start, end))
+
+              if len(candidates) != 1:
+                  raise RuntimeError(
+                      f"无法唯一定位 {device} 对应的主线 case 块；"
+                      f"匹配数={len(candidates)}，函数={sorted(functions)}"
+                  )
+
+              start, end = candidates[0]
+
+              # 若有 *)，必须插入它之前；没有则插在 esac 前。
+              insert_at = end
+
+              for i in range(start + 1, end):
+                  if re.match(r'^\s*\*\)\s*(?:#.*)?$', lines[i]):
+                      insert_at = i
                       break
 
-                  end_match = re.search(
-                      r'^[ \t]*esac[ \t]*$',
-                      text[match.end():],
-                      re.M
+              new_lines = (
+                  lines[:insert_at]
+                  + ["\n"]
+                  + branch
+                  + ["\n"]
+                  + lines[insert_at:]
+              )
+
+              return new_lines, True
+
+          for relative in files:
+              source = adapt / "target/linux/rockchip" / relative
+              target = rock / relative
+
+              if not source.is_file():
+                  sys.exit(f"ERROR: 适配仓库缺少板级文件：{source}")
+
+              if not target.is_file():
+                  sys.exit(f"ERROR: OpenWrt 主线缺少板级文件：{target}")
+
+              source_lines = source.read_text(
+                  encoding="utf-8"
+              ).splitlines(keepends=True)
+
+              target_lines = target.read_text(
+                  encoding="utf-8"
+              ).splitlines(keepends=True)
+
+              source_blocks = parse_case_blocks(source_lines)
+              target_blocks = parse_case_blocks(target_lines)
+
+              branches = extract_device_branches(
+                  source_lines, source_blocks
+              )
+
+              if not branches:
+                  sys.exit(
+                      f"ERROR: 适配仓库文件中没有找到 {device} 分支："
+                      f"{source}"
                   )
 
-                  if not end_match:
-                      raise RuntimeError("case 块缺少 esac")
+              # 从后往前插入，避免前面的行号变化影响剩余分支。
+              for info in reversed(branches):
+                  if any(device in line for line in target_lines):
+                      break
 
-                  body_start = match.end()
-                  body_end = body_start + end_match.start()
-
-                  spans.append((body_start, body_end))
-                  pos = body_start + end_match.end()
-
-              return spans
-
-          def insert_before_default(text, body_start, body_end, snippet):
-              body = text[body_start:body_end]
-
-              if "hinlink,opc-h68k-c-d-f-usb)" in body:
-                  return text, False
-
-              fallback = re.search(
-                  r'^[ \t]*\*\)[ \t]*$',
-                  body,
-                  re.M
-              )
-
-              if not fallback:
-                  raise RuntimeError(
-                      "找不到官方 case 的 *) 兜底分支，拒绝盲目修改"
+                  target_blocks = parse_case_blocks(target_lines)
+                  target_lines, changed = insert_branch(
+                      target_lines, target_blocks, info
                   )
 
-              insert_at = body_start + fallback.start()
-              return text[:insert_at] + snippet + text[insert_at:], True
+                  if changed:
+                      print(f"已合并 {relative} 中的 {device} 分支")
 
-          # 02_network：接口映射 + 稳定 MAC 地址
-          if not network.is_file():
-              sys.exit("ERROR: 找不到 OpenWrt 的 02_network")
+              if not any(device in line for line in target_lines):
+                  sys.exit(f"ERROR: 合并后未找到 {device}：{target}")
 
-          text = network.read_text(encoding="utf-8")
-          spans = find_case_spans(text)
-
-          if len(spans) != 2:
-              sys.exit(
-                  f"ERROR: 02_network 的 case 块数量为 {len(spans)}，"
-                  "与预期不符，停止修改"
+              target.write_text(
+                  "".join(target_lines),
+                  encoding="utf-8"
               )
 
-          interface_branch = """
-          \t\t# HINLINK H68K C/D/F USB3.0
-          \t\thinlink,opc-h68k-c-d-f-usb)
-          \t\t\tucidef_set_interfaces_lan_wan 'eth1 eth2 eth3' 'eth0'
-          \t\t\t;;
-          """
-
-          mac_branch = """
-          \t\t# HINLINK H68K C/D/F USB3.0
-          \t\thinlink,opc-h68k-c-d-f-usb)
-          \t\t\twan_mac=$(macaddr_generate_from_mmc_cid mmcblk0)
-          \t\t\tlan_mac=$(macaddr_add "$wan_mac" 1)
-          \t\t\t;;
-          """
-
-          changed = False
-
-          # 从后往前插入，避免前一次修改影响后续位置。
-          for index, snippet in [
-              (1, mac_branch),
-              (0, interface_branch)
-          ]:
-              spans = find_case_spans(text)
-              start, end = spans[index]
-              text, did_change = insert_before_default(
-                  text, start, end, snippet
-              )
-              changed = changed or did_change
-
-          if changed:
-              network.write_text(text, encoding="utf-8")
-
-          # 01_leds：目标机型 WAN 指示灯
-          if not leds.is_file():
-              sys.exit("ERROR: 找不到 OpenWrt 的 01_leds")
-
-          text = leds.read_text(encoding="utf-8")
-          spans = find_case_spans(text)
-
-          if len(spans) != 1:
-              sys.exit(
-                  f"ERROR: 01_leds 的 case 块数量为 {len(spans)}，"
-                  "与预期不符，停止修改"
-              )
-
-          led_branch = """
-          \t# HINLINK H68K C/D/F USB3.0
-          \thinlink,opc-h68k-c-d-f-usb)
-          \t\tucidef_set_led_netdev "wan" "WAN" "blue:wan" "eth0"
-          \t\t;;
-          """
-
-          start, end = spans[0]
-          text, did_change = insert_before_default(
-              text, start, end, led_branch
-          )
-
-          if did_change:
-              leds.write_text(text, encoding="utf-8")
-
-          print("H68K C/D/F USB 网络映射和 LED 配置已合并")
+          print("网络映射与 LED 分支检查完成")
           PY
 
-          # ---------------------------------------------------------
-          # 6. 输出关键适配结果
-          # ---------------------------------------------------------
-          echo "===== 设备定义 ====="
-          grep -n -A 7 \
-            'define Device/hinlink_opc-h68k-c-d-f-usb' \
-            "$IMAGE_MK"
+          echo "===== 专用设备定义 ====="
+          grep -n -A 15 \
+            "define Device/$DEVICE_ID" "$IMAGE_MK"
 
-          echo "===== DTS 文件 ====="
-          ls -l "$DTS_DST/rk3568-hinlink-h68k-c-d-f-usb.dts"
-          ls -l "$DTS_DST/rk3568-hinlink-opc.dtsi"
+          echo "===== 专用 DTS ====="
+          find "$DTS_DST" -maxdepth 1 -type f \
+            \( -name "$DEVICE_DTS.dts" -o -name '*.dtsi' \) \
+            -printf '%f\n'
 
-          echo "===== 网络映射 ====="
-          grep -n -A 3 \
-            'hinlink,opc-h68k-c-d-f-usb)' \
-            "$ROCK/armv8/base-files/etc/board.d/02_network"
+          echo "===== 设备 DTB 注册补丁 ====="
+          cat "$PATCH_FILE"
 
-          echo "===== LED 映射 ====="
-          grep -n -A 3 \
-            'hinlink,opc-h68k-c-d-f-usb)' \
-            "$ROCK/armv8/base-files/etc/board.d/01_leds"
-
-      - name: 更新并安装 feeds
+      - name: 更新 feeds
         working-directory: openwrt
+        shell: bash
         run: |
           set -Eeuo pipefail
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 生成主线专用配置
+      - name: 生成 OpenWrt 主线配置
         working-directory: openwrt
+        shell: bash
         run: |
           set -Eeuo pipefail
 
@@ -357,85 +608,48 @@ jobs:
 
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
 
-          CONFIG_PACKAGE_kmod-r8169=y
-          CONFIG_PACKAGE_kmod-ata-ahci-dwc=y
-          CONFIG_PACKAGE_kmod-mt7921e=y
-          CONFIG_PACKAGE_wpad-basic-mbedtls=y
           CONFIG_PACKAGE_block-mount=y
           CONFIG_PACKAGE_usbutils=y
-          CONFIG_PACKAGE_luci-proto-ppp=y
-          CONFIG_PACKAGE_ppp=y
-          CONFIG_PACKAGE_ppp-mod-pppoe=y
-          CONFIG_PACKAGE_dnsmasq=y
-          CONFIG_PACKAGE_firewall4=y
-          CONFIG_PACKAGE_nftables=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_wget-ssl=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_tcpdump=y
-          CONFIG_PACKAGE_iperf3=y
-          CONFIG_PACKAGE_ethtool=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_coreutils-timeout=y
           CONFIG_PACKAGE_kmod-usb-storage=y
           CONFIG_PACKAGE_kmod-fs-ext4=y
           CONFIG_PACKAGE_kmod-fs-vfat=y
           CONFIG_PACKAGE_kmod-nls-cp437=y
           CONFIG_PACKAGE_kmod-nls-iso8859-1=y
           CONFIG_PACKAGE_kmod-nls-utf8=y
-          CONFIG_PACKAGE_kmod-usb-net=y
-          CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
-          CONFIG_PACKAGE_kmod-usb-net-rndis=y
-          CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
-          CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
-          CONFIG_PACKAGE_kmod-usb-serial-option=y
-          CONFIG_PACKAGE_usb-modeswitch=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-          CONFIG_PACKAGE_ttyd=y
+
+          CONFIG_PACKAGE_ppp=y
+          CONFIG_PACKAGE_ppp-mod-pppoe=y
+
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
           CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_lsblk=y
-          CONFIG_PACKAGE_blkid=y
-          CONFIG_PACKAGE_fdisk=y
-          CONFIG_PACKAGE_smartmontools=y
-          CONFIG_PACKAGE_samba4-server=y
-          CONFIG_PACKAGE_wsdd2=y
-          CONFIG_PACKAGE_luci-app-samba4=y
-          CONFIG_PACKAGE_luci-i18n-samba4-zh-cn=y
-          CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-          CONFIG_PACKAGE_luci-app-attendedsysupgrade=y
-          CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-cn=y
-          CONFIG_PACKAGE_luci-app-commands=y
-          CONFIG_PACKAGE_luci-i18n-commands-zh-cn=y
-          CONFIG_PACKAGE_luci-app-ttyd=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-          CONFIG_PACKAGE_luci-app-watchcat=y
-          CONFIG_PACKAGE_luci-i18n-watchcat-zh-cn=y
+          CONFIG_PACKAGE_ethtool=y
+          CONFIG_PACKAGE_tcpdump=y
+          CONFIG_PACKAGE_iperf3=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_ttyd=y
           CONFIG
           make defconfig
 
           if ! grep -q \
             '^CONFIG_TARGET_rockchip_armv8_DEVICE_hinlink_opc-h68k-c-d-f-usb=y$' \
             .config; then
-            echo "ERROR: 主线 defconfig 未保留 H68K C/D/F USB 目标"
+            echo "ERROR: make defconfig 未保留 H68K C/D/F USB 目标"
             grep '^CONFIG_TARGET_rockchip_armv8_DEVICE_' .config || true
             exit 1
           fi
 
-          echo "===== 最终目标 ====="
+          echo "===== 最终设备目标 ====="
           grep '^CONFIG_TARGET_rockchip_armv8_DEVICE_.*=y$' .config
 
           mkdir -p config-output
-          cp .config "config-output/h68k-c-d-f-usb-${DATE_TAG}.config"
+          cp .config \
+            "config-output/h68k-c-d-f-usb-${DATE_TAG}.config"
 
-      - name: 上传完整配置
+      - name: 上传完整 .config
         if: env.BUILD_CONFIG_ONLY == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -444,56 +658,76 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: 下载编译依赖
+      - name: 下载编译源码包
         if: env.BUILD_CONFIG_ONLY != 'true'
         working-directory: openwrt
+        shell: bash
         run: |
           set -Eeuo pipefail
-          make download -j"$(nproc)"
+          make download -j8
           find dl -size -1024c -type f -delete
 
-      - name: 编译固件
+      - name: 编译 OpenWrt 固件
+        id: compile
         if: env.BUILD_CONFIG_ONLY != 'true'
         working-directory: openwrt
+        shell: bash
         run: |
           set -Eeuo pipefail
-          make -j"$(nproc)" || make -j1 V=s
 
-      - name: 检查编译结果
-        if: env.BUILD_CONFIG_ONLY != 'true'
+          # 先执行内核准备步骤，使补丁应用错误能尽早暴露。
+          make target/linux/prepare V=s
+
+          # 验证内核 DTS Makefile 中确实注册了专用 DTB。
+          KERNEL_DIR="$(
+            find build_dir -type f \
+              -path '*/arch/arm64/boot/dts/rockchip/Makefile' \
+              -print -quit
+          )"
+
+          if [ -z "$KERNEL_DIR" ]; then
+            echo "ERROR: 找不到准备后的 Rockchip 内核 DTS Makefile"
+            exit 1
+          fi
+
+          if ! grep -q "$DEVICE_DTS\.dtb" "$KERNEL_DIR"; then
+            echo "ERROR: 专用 DTB 未成功注册：$KERNEL_DIR"
+            exit 1
+          fi
+
+          echo "===== 内核 DTS Makefile ====="
+          grep -n "$DEVICE_DTS\.dtb" "$KERNEL_DIR"
+
+          # 主线全量构建；并行失败后以单线程详细日志重试。
+          make -j2 || make -j1 V=s
+
+      - name: 检查编译产物
+        if: steps.compile.outcome == 'success'
         working-directory: openwrt
+        shell: bash
         run: |
           set -Eeuo pipefail
 
           TARGET_DIR="bin/targets/rockchip/armv8"
 
           if [ ! -d "$TARGET_DIR" ]; then
-            echo "ERROR: 未找到 Rockchip ARMv8 固件目录"
+            echo "ERROR: 未找到固件输出目录：$TARGET_DIR"
             find bin/targets -maxdepth 4 -type d || true
             exit 1
           fi
 
-          echo "===== 生成的固件 ====="
+          echo "===== 固件文件 ====="
           find "$TARGET_DIR" -maxdepth 1 -type f \
-            \( -name '*.img.gz' -o \
-               -name '*.img' -o \
-               -name '*.bin' -o \
-               -name '*.manifest' -o \
-               -name '*.buildinfo' -o \
-               -name '*.json' \) \
             -printf '%f %s bytes\n'
 
-          if ! find "$TARGET_DIR" -maxdepth 1 -type f \
-            \( -name '*hinlink*' -o -name '*HINLINK*' \) \
-            | grep -q .; then
-            echo "WARNING: 未找到文件名含 HINLINK 的固件，需核实镜像产物"
-          fi
-
           mkdir -p "$GITHUB_WORKSPACE/firmware"
-          cp .config "$GITHUB_WORKSPACE/firmware/config-${DATE_TAG}.config"
-          cp "$TARGET_DIR"/* "$GITHUB_WORKSPACE/firmware/" 2>/dev/null || true
 
-          # 记录 DTB 和设备定义，方便核对是否编入专用目标
+          cp "$TARGET_DIR"/* "$GITHUB_WORKSPACE/firmware/" \
+            2>/dev/null || true
+
+          cp .config \
+            "$GITHUB_WORKSPACE/firmware/config-${DATE_TAG}.config"
+
           {
             echo "Device: $DEVICE_ID"
             echo "DTS: $DEVICE_DTS"
@@ -502,9 +736,14 @@ jobs:
             echo
             echo "Selected target:"
             grep '^CONFIG_TARGET_rockchip_armv8_DEVICE_.*=y$' .config
+            echo
+            echo "DTS registration:"
+            grep -R "$DEVICE_DTS\.dtb" \
+              build_dir/target-*/linux-rockchip_*/linux-*/arch/arm64/boot/dts/rockchip/Makefile \
+              2>/dev/null || true
           } > "$GITHUB_WORKSPACE/firmware/BUILD-INFO.txt"
 
-      - name: 上传固件和构建信息
+      - name: 上传固件构建产物
         if: steps.compile.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
@@ -521,14 +760,17 @@ jobs:
           tag_name: h68k-c-d-f-usb-${{ github.run_number }}
           files: firmware/*
           body: |
-            OpenWrt main 专用 HINLINK H68K C/D/F USB3.0 构建。
+            OpenWrt main 专用 HINLINK H68K C/D/F USB 构建。
 
             主源码：openwrt/openwrt main
             硬件适配：Beaverfffan/immortalwrt-hinlink
             设备目标：hinlink_opc-h68k-c-d-f-usb
 
-            注意：首次编译产物仍需检查 DTB、设备定义及启动情况；
-            未经实机验证，不应视为已确认可安全刷写。
+            本构建使用适配仓库中的专用设备定义、DTS、
+            内核配置片段、网络映射和 LED 分支。
+
+            首次构建产物仍需检查启动、网口映射、USB 和升级方式；
+            未经实机验证，不代表已经确认可安全刷写。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
