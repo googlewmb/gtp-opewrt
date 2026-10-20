@@ -1,42 +1,253 @@
-# OpenWrt H68K 云编译
+HINLINK H68K C/D/F USB 原版硬件 OpenWrt 主线云编译需求说明
 
-使用 **openwrt/openwrt 的 main 分支**与官方 `hinlink_h68k` Target、DTS 和 U-Boot 配置，目标为 HINLINK H68K / RK3568 / ARM64。
+一、项目目标
 
-在 Actions → **OpenWrt H68K** → Run workflow 启动。成功后生成固件 Artifact；勾选 `release` 时发布 Release。下载固件时一起保存 `sha256sums`，刷机前核验。CI 不替代实机启动测试。
+基于 OpenWrt 官方主线源码 openwrt/openwrt 的 main 分支，参考 HINLINK 硬件适配仓库，将原版 HINLINK H68K C/D/F USB 机型正确适配到 OpenWrt 主线，并通过 GitHub Actions 实现自动化云编译。
 
-## 修复内容
+最终目标是生成适用于原版 HINLINK H68K C/D/F USB 硬件的可用固件，而不是仅仅生成一份能够通过语法检查的 YAML 文件。
 
-- 先更新 feeds，再安装依赖和应用 SONiC；不再按通配符执行所有脚本，也不提前用不完整配置准备内核。
-- 修复 Ninja 1.13.2 的 `configure.py` 不支持 `--no-rebuild` 导致的构建失败。
-- 缓存路径不含行尾注释；保留配置、下载、工具链、内核和并行/单线程编译日志。
-- 使用 OpenWrt 包配置命名空间；BBR/FQ 通过 `kmod-tcp-bbr`、`kmod-sched` 安装及自动加载，sysctl 设置默认 BBR/FQ。不会把原生 BBRv1 当作 BBRv3。
-- 对最终 `.config` 检查请求的所有选项，缺包/依赖不满足时停止，避免 `defconfig` 静默删除功能。
-- 检查 H68K 镜像、manifest、真实文件名 `sha256sums` 及校验结果，验证成功后才发布。
+二、指定仓库与源码
 
-## 功能与来源
+云编译项目：
+https://github.com/googlewmb/gtp-opewrt
 
-`config/h68k.txt` 是功能选择入口。默认启用 OpenClash、HomeProxy、SmartDNS、MosDNS、PassWall、DAED、Diskman，以及常用网络/存储服务。代理需要自行配置，不保证多个透明代理能同时运行。
+硬件适配参考仓库：
+https://github.com/Beaverfffan/immortalwrt-hinlink
 
-独立包优先于集合 feed，集合 feed 按 `feeds.conf` 顺序优先于官方 feed。保留官方工具链；不使用其他发行版作为底层。`store`、`third` 不是官方 OpenWrt 默认 feed，不凭资料中的名称伪造来源。OLED、OpenAppFilter、NATMapT 可在配置启用后下载；其余资料列出的插件尚未逐一移植验证。
+OpenWrt 主源码：
+https://github.com/openwrt/openwrt
 
-SONiC 来自 [mufeng05/openwrt-sonic-fullcone](https://github.com/mufeng05/openwrt-sonic-fullcone)。集成内核、libnftnl、nftables、firewall4、LuCI 与中文翻译。当前上游共用补丁支持 6.6/6.12/6.18；遇到未支持的内核立即停止。可在原生防火墙页面设置全局、区域与协议，不自动开放所有 Full Cone 规则，不引入 TurboACC。
+OpenWrt 主源码分支：
+main
 
-DAED 来自 [QiuSimons/luci-app-daed](https://github.com/QiuSimons/luci-app-daed)，同时安装后端、Web 前端、LuCI 与 BPF/BTF/XDP 依赖。主机安装 Clang/LLVM/Node/pnpm。针对其固定 DAED 源码 `f045ecd` 的 GraphQL catalog 锁文件不一致修复元数据（保留 Vite override），不更改锁定版本或关闭 frozen 检查；其他未知不一致会报错。
+目标设备 ID：
+hinlink_opc-h68k-c-d-f-usb
 
-BBRv3 的算法源码直接来自 [Google BBR team](https://github.com/google/bbr/tree/v3)，固定提交 `795544cc00f03d49cfa6802f3da32c0d0a6fb4ab`。TCP 配套接口移植参考 [sbwml/kernel-latest-centos](https://github.com/sbwml/kernel-latest-centos) 的固定 BBR 补丁提交，只取 BBR 相关文件，不使用其发行版或其他补丁。检测实际内核接口后，选择能完整通过 dry-run 的适配器，生成当前源码专用 patch，重新 prepare 并实际 Kbuild。**无法承诺自动支持任意未来内核 API**；不匹配时明确失败，需要补充经过验证的适配器。补丁回放成功不等于内核已编译成功。
+专用设备树文件：
+rk3568-hinlink-h68k-c-d-f-usb.dts
 
-`build-info` 保存 OpenWrt、feeds、插件提交、BBR 来源、最终配置及内核配置。上游 main/feeds 仍可能变化；诊断问题时请提供对应构建日志及此目录。
+相关公共设备树依赖：
+rk3568-hinlink-opc.dtsi 及经源码检查确认必须使用的其他本地依赖文件。
 
-首次启动通过 UCI defaults 配置并启用检测到的 Wi-Fi，H68K 无内置无线电。conntrack 上限为 `655550`，配置位于独立 sysctl.d 文件中。
+注意：硬件适配参考仓库仅用于提取和移植必要的硬件适配内容。不得将 ImmortalWrt 整套源码替换为主源码，也不得不加检查地直接复制所有配置、补丁或构建脚本。
 
-## 验证边界
+三、硬件适配要求
 
-本地检查覆盖 YAML/Shell/Python 语法、官方 H68K 定义、Ninja 修复、DAED 锁文件、BBRv3 在 Linux 6.18.52 TCP 源码上的完整补丁回放。GitHub Actions 的实际结果是编译成功与否的依据；仅有本地检查不能认定固件已可用。
+必须实际检查适配仓库与 OpenWrt 主线的对应文件，确认版本、目录结构和实现方式，再进行适配。
 
-## BBRv3 专用自动适配入口
+1. DTS 设备树
 
-已接入 patch/openwrt-bbr3.py，支持检测实际内核、发现上游候选、失败重试、完整 Kbuild 与模块版本核对。刷机后可运行 br3-check。用法和兼容边界见 [BBR3.md](patch/BBR3.md)。
+复制目标设备专用 DTS。
 
-## 目录说明
+检查并复制所需的本地 DTSI 依赖。
 
-`config/` 保存固件配置，`patch/` 按功能与阶段统一保存补丁，`tests/` 保存回归测试。详细分类见 [补丁目录](patch/README.md)。云编译步骤和变量均附中文注释。
+保留 OpenWrt 主线原有的公共设备树文件。
+
+检查 USB 3.0 版本对应的硬件配置，不能误用 SATA 版本或其他 H68K 变体的设备树。
+
+确保设备树中的 compatible 与目标设备一致。
+
+不得仅复制 DTS 文件而遗漏设备树编译注册。
+
+2. 设备定义
+
+在 OpenWrt 主线对应的 Rockchip ARMv8 设备定义文件中，正确添加目标设备。
+
+要求：
+
+设备 ID 为 hinlink_opc-h68k-c-d-f-usb。
+
+使用正确的 DTS 名称。
+
+使用与目标硬件匹配的启动设备名称。
+
+继承通用 H68K 设备定义时，必须检查继承的设备包和硬件参数是否适用于 C/D/F USB 版本。
+
+不得覆盖或破坏主线现有的 H68K、H66K、H69K 等设备定义。
+
+3. DTS 编译注册与内核补丁
+
+检查 OpenWrt 主线当前使用的内核版本和 DTS 构建机制。
+
+确认专用 DTS 被实际加入内核设备树构建系统。
+
+如果需要补丁，必须根据当前源码真实内容生成补丁。
+
+检查补丁是否可以正确应用，避免依赖错误的上下文行号或假设主线文件内容固定。
+
+不得仅创建补丁文件便认定 DTS 已成功编译。
+
+4. 网络接口配置
+
+根据目标设备实际 DTS 和硬件适配仓库确认接口映射。
+
+目前适配文件中的预期映射为：
+
+LAN：eth1、eth2、eth3
+
+WAN：eth0
+
+必须核实上述映射是否与目标 DTS 和主线网络初始化机制一致，再修改 02_network。
+
+特别注意：
+
+设备 ID hinlink_opc-h68k-c-d-f-usb 与 DTS compatible hinlink,opc-h68k-c-d-f-usb 是两个不同的标识。
+
+不能使用设备 ID 代替 compatible 查找板级分支。
+
+必须先读取主线 02_network 的真实结构，再决定如何插入或合并配置。
+
+不得假设文件中一定存在某个 *) 兜底分支。
+
+必须保留其他设备的网络配置，避免重复插入或破坏原有逻辑。
+
+应检查目标设备的 MAC 地址初始化是否需要单独适配。
+
+5. LED 配置
+
+检查主线 01_leds 的真实结构，按照目标 DTS 中实际存在的 LED 节点和触发方式合并配置。
+
+只添加目标设备需要的配置。
+
+不得凭空假定 LED 名称、颜色或触发器一定存在。
+
+不得覆盖其他 HINLINK 设备的配置。
+
+如果某项硬件配置无法从源码确认，应明确指出，不得自行编造。
+
+6. 其他硬件依赖
+
+检查硬件适配仓库中与目标设备相关的配置、补丁、启动逻辑和内核模块要求。
+
+只移植目标机型确实需要且与 OpenWrt 主线兼容的内容，不做无依据的额外修改。
+
+四、GitHub Actions 工作流要求
+
+生成一份完整、可直接复制到仓库中的 GitHub Actions YAML 文件。
+
+工作流应包括以下步骤：
+
+手动触发构建。
+
+初始化 Ubuntu 编译环境并安装所需依赖。
+
+获取 OpenWrt 官方 main 分支。
+
+获取指定的 HINLINK 硬件适配仓库。
+
+检查并合并目标设备所需的硬件文件。
+
+注册目标设备并处理必要的 DTS 编译配置。
+
+更新和安装 feeds。
+
+生成目标设备 .config。
+
+执行 make defconfig。
+
+验证最终配置仍然选择了正确的目标设备。
+
+根据构建参数决定仅输出配置，或继续正式编译。
+
+正式编译前下载所需源码包。
+
+执行固件编译，并在失败时输出有用的错误日志。
+
+验证固件文件确实生成。
+
+上传 .config、编译日志及所需固件产物。
+
+按工作流配置发布 GitHub Release。
+
+所有步骤必须符合当前 OpenWrt 主线的实际构建流程，不能照搬其他固件分支的专用脚本而不进行兼容性检查。
+
+五、构建参数
+
+保留 workflow_dispatch，并提供布尔参数：
+
+BUILD_CONFIG_ONLY
+
+行为要求：
+
+true：完成必要的源码和配置处理，执行配置生成与验证，上传最终 .config，不执行正式固件编译。
+
+false：完成配置验证后，继续执行正式固件编译，并上传编译产物。
+
+仅配置模式也必须检查目标设备是否真正进入最终 .config，不能仅输出未经验证的初始配置。
+
+六、必须保留和禁止的行为
+
+必须保留
+
+OpenWrt 官方主线作为主源码。
+
+指定的硬件适配参考仓库。
+
+手动触发和 BUILD_CONFIG_ONLY 参数。
+
+必要的配置上传、固件上传及 Release 流程。
+
+对源码、配置和补丁的兼容性检查。
+
+清晰的错误日志和失败检查。
+
+明确禁止
+
+不得擅自把主源码改成 ImmortalWrt 或 iStoreOS。
+
+不得无依据地修改其他设备的配置。
+
+不得把设备 ID 与 DTS compatible 混为一谈。
+
+不得假定板级分支、兜底分支、Makefile 内容或固件文件名一定存在。
+
+不得重复插入相同配置。
+
+不得遗漏 DTSI 等必要依赖。
+
+不得加入“首次启动自动开启 Wi-Fi”功能。
+
+不得删除与本次适配无关的原有工作流功能。
+
+不得只提供代码片段、伪代码或需要手动拼接的 YAML。
+
+不得声称未经实际执行的工作流已经编译成功。
+
+七、此前错误必须避免
+
+此前工作流出现过板级适配判断失败，原因是脚本使用设备 ID 查找网络配置分支，而主线文件使用 DTS compatible 标识。
+
+正确处理方式：
+
+获取主线当前真实文件。
+
+获取适配仓库对应文件。
+
+明确设备 ID、DTS 文件名、compatible 和启动设备名称之间的区别。
+
+按真实文件结构执行有边界的修改。
+
+检查修改前后差异，确认没有破坏其他设备。
+
+验证 DTS 注册、网络配置、设备配置及最终 .config。
+
+只有在实际运行 GitHub Actions 并取得成功结果后，才能认定编译通过。
+
+八、最终交付标准
+
+最终需要交付：
+
+完整 YAML 文件：能够直接复制到 googlewmb/gtp-opewrt 仓库中使用。
+
+明确的文件路径：说明应保存到哪个 .github/workflows/ 路径。
+
+必要的修改说明：指出哪些硬件文件和主线文件经过适配，以及为什么需要修改。
+
+可定位的错误信息：若源码结构与预期不一致，应明确报错并停止，不得静默跳过。
+
+配置验证机制：确认目标设备确实被 OpenWrt 主线识别并进入最终配置。
+
+构建验证说明：明确区分静态检查、配置生成成功、正式编译成功和实际设备启动验证。
+
+最终目标是：在不破坏 OpenWrt 主线其他设备的前提下，完成原版 HINLINK H68K C/D/F USB 的正确硬件适配，实现可重复、可诊断、可维护的 GitHub Actions 云编译流程。
+
